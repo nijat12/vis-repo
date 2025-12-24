@@ -1,0 +1,9 @@
+rich
+opencv-python-headless
+pandas>=2.2.2
+tqdm
+ultralytics
+torch
+numpy<2
+scipy
+google-cloud-logging
