@@ -41,7 +41,7 @@ class BaselineStrategy:
                 return []
 
         video_folders = sorted(glob.glob(os.path.join(self.train_dir, '*')))
-        video_folders = [f for f in video_folders if os.path.isdir(f)][:1]
+        video_folders = [f for f in video_folders if os.path.isdir(f)]
 
         results_data = []
         total_videos = len(video_folders)
