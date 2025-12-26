@@ -1,28 +1,43 @@
-# Use an official lightweight Python image
-FROM python:3.9-slim
-
-# Install system dependencies for OpenCV (glib)
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# VIS Pipeline - Dockerfile
+# Base image: Python 3.14.2 slim for minimal footprint
+FROM python:3.14.2-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install Python libraries
-# We use opencv-python-headless because there is no screen in the cloud
-RUN pip install --no-cache-dir \
-    torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu \
-    opencv-python-headless \
-    pandas \
-    tqdm \
-    requests \
-    PyYAML \
-    seaborn 
+# Install only essential system dependencies
+# gcc/g++/make: Required for compiling numpy and other Python packages with C extensions
+# libgl1/libglib2.0-0: Required for OpenCV
+# sudo/systemd: Required for VM shutdown capability
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    sudo \
+    systemd \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy your code into the container
-COPY main.py .
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Command to run the script
+# Install Python dependencies
+# google-cloud-storage library handles GCS access using VM credentials (no CLI needed)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/data_local /app/metrics
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Default command
 CMD ["python", "main.py"]

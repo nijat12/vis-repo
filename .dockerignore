@@ -1,0 +1,41 @@
+# Add to .dockerignore to reduce image size
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Data directories (will be mounted as volumes)
+data_local/
+metrics/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+run.log
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Service account key (use VM credentials instead)
+colab-upload-bot-key.json
+
+# Documentation
+README*.md
+*.md
+
+# Artifacts
+.gemini/

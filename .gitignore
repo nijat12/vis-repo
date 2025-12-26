@@ -3,3 +3,4 @@ yolo*
 *key.json
 data_local/*
 nohup.out
+train.json
