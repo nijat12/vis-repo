@@ -184,7 +184,7 @@ def run_strategy_7_pipeline():
                     diff = cv2.absdiff(curr_gray, warped_prev)
                     diff_f = diff.astype(np.float32)
                     diff_blur = cv2.GaussianBlur(diff_f, (0, 0), 2.0)
-                    diff_hp = cv2.maximum(diff_f - diff_blur, 0).astype(np.uint8)
+                    diff_hp = np.maximum(diff_f - diff_blur, 0).astype(np.uint8)
 
                     t_low = float(np.percentile(diff_hp, 98.5))
                     t_high = float(np.percentile(diff_hp, 99.6))
