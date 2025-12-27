@@ -194,7 +194,7 @@ def run_baseline_pipeline():
             
             if i % 20 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                sys.stdout.write(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                logger.info(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
 
             img = cv2.imread(img_path)
             if img is None:
@@ -266,7 +266,7 @@ def run_baseline_pipeline():
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
-        sys.stdout.write("\r" + " " * 80 + "\r")
+        logger.info("\r" + " " * 80 + "\r")
         logger.info(f"{video_name:<10} | {n_frames:<6} | {vid_fps:<6.1f} | {prec:<6.2f} | {rec:<6.2f} | {f1:<6.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
 
         results_data.append({
