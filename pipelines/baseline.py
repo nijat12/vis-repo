@@ -54,9 +54,10 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
     """
     h, w, _ = img.shape
 
-    # Grid Configuration: 4 Cols x 3 Rows = 12 Tiles
-    N_COLS = 4
-    N_ROWS = 3
+    # Grid Configuration: 6 Cols x 4 Rows = 24 Tiles
+    # For 3840x2160: 3840/6 = 640, 2160/4 = 540. Matches YOLO12 native resolution.
+    N_COLS = 6
+    N_ROWS = 4
 
     h_step = h // N_ROWS
     w_step = w // N_COLS

@@ -389,7 +389,7 @@ def run_strategy_9_pipeline():
             batch_imgs = [s[0] for s in slices]
             
             # Run Inference
-            results = model(batch_imgs, verbose=False, conf=cfg['conf_thresh'], classes=[cfg['bird_class_id']])
+            results = model(batch_imgs, imgsz=cfg['img_size'], verbose=False, conf=cfg['conf_thresh'], classes=[cfg['bird_class_id']])
 
             # --- STEP 3: MERGE DETECTIONS ---
             raw_detections = [] 

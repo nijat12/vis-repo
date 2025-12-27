@@ -73,7 +73,7 @@ class Config:
     # ==========================================
     BASELINE_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
-        "img_size": 1280,
+        "img_size": 640,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
@@ -85,7 +85,7 @@ class Config:
     # ==========================================
     STRATEGY_2_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
-        "img_size": 1280,
+        "img_size": 640,
         "conf_thresh": 0.01,
         "model_classes": [14],
         "roi_scale": 3.0,
@@ -115,7 +115,7 @@ class Config:
     # ==========================================
     STRATEGY_8_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
-        "img_size": 1280,
+        "img_size": 640,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],
@@ -134,6 +134,7 @@ class Config:
         "model_path": UNIFIED_MODEL_NAME,  # Using YOLO
         "conf_thresh": 0.2,          # Confidence threshold (from diagram)
         "slice_size": 640,           # Slice dimensions (from diagram)
+        "img_size": 640,             # Inference size
         "overlap": 0.2,              # Overlap ratio (from diagram)
         "bird_class_id": 14,         # YOLO Bird class ID
         "tracker_dist_thresh": 50,   # Pixel distance for DotD association
@@ -147,6 +148,7 @@ class Config:
     # ==========================================
     STRATEGY_10_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
+        "img_size": 640,
         "conf_thresh": 0.1,          # Confidence for YOLO classification
         "motion_thresh_scale": 4.0,  # multiplier for motion threshold
         "bird_class_id": 14,
