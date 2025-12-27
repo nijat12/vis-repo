@@ -109,13 +109,13 @@ class Config:
     # Number of CPU workers for parallel pipeline execution
     # Set to 1 for sequential execution
     # Set to len(ENABLED_PIPELINES) to run all pipelines in parallel
-    MAX_WORKERS: int = len(ENABLED_PIPELINES)
+    MAX_WORKERS: int = 1
     
     # ==========================================
     # VM KILLSWITCH
     # ==========================================
     # Automatically shutdown VM after pipeline completion
-    ENABLE_KILLSWITCH: bool = False
+    ENABLE_KILLSWITCH: bool = True
     
     # Delay before shutdown (seconds) - gives time to review logs
     KILLSWITCH_DELAY_SECONDS: int = 60

@@ -101,7 +101,7 @@ def main():
             if Config.ENABLE_KILLSWITCH:
                 logger.info("🔴 Triggering killswitch due to authentication failure...")
                 import vm_utils
-                vm_utils.trigger_killswitch(delay_seconds=10)
+                vm_utils.shutdown_vm(delay_seconds=10)
             
             sys.exit(1)
         
@@ -116,7 +116,7 @@ def main():
             if Config.ENABLE_KILLSWITCH:
                 logger.info("🔴 Triggering killswitch due to data download failure...")
                 import vm_utils
-                vm_utils.trigger_killswitch(delay_seconds=10)
+                vm_utils.shutdown_vm(delay_seconds=10)
             
             sys.exit(1)
         
