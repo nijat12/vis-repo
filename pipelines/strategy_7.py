@@ -160,7 +160,7 @@ def run_strategy_7_pipeline():
         vid_start = time.time()
         n_frames = len(images)
         prev_gray = None
-        tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=2, min_hits=2)
+        obj_tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=2, min_hits=2)
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()  # Track per-image time
@@ -270,7 +270,7 @@ def run_strategy_7_pipeline():
             prev_gray = curr_gray
 
             # Tracking
-            final_preds = tracker.update(raw_detections)
+            final_preds = obj_tracker.update(raw_detections)
 
             # Evaluation
             key = f"{video_name}/{os.path.basename(img_path)}"

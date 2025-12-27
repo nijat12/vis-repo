@@ -37,10 +37,13 @@ class Config:
     GCS_TRAIN_ZIP: str = "trainxs.zip"
     GCS_JSON_URL: str = "train.json"
     
+    # Project Root
+    PROJECT_ROOT: str = os.path.dirname(os.path.abspath(__file__))
+    
     # Local data paths
-    LOCAL_BASE_DIR: str = "./data_local"
+    LOCAL_BASE_DIR: str = os.path.join(PROJECT_ROOT, "data_local")
     LOCAL_TRAIN_DIR: str = os.path.join(LOCAL_BASE_DIR, "trainxs")
-    LOCAL_JSON_PATH: str = "./train.json"
+    LOCAL_JSON_PATH: str = os.path.join(PROJECT_ROOT, "train.json")
     LOCAL_ZIP_PATH: str = os.path.join(LOCAL_BASE_DIR, "trainxs.zip")
     
     # ==========================================

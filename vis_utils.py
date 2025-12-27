@@ -132,13 +132,29 @@ def check_and_download_data():
     """
     logger.info("📥 Checking training data...")
     
-    # Check if data already exists
-    if os.path.exists(Config.LOCAL_TRAIN_DIR) and os.path.exists(Config.LOCAL_JSON_PATH):
+    # Check if JSON exists
+    json_exists = os.path.exists(Config.LOCAL_JSON_PATH)
+    # Check if train dir exists
+    dir_exists = os.path.exists(Config.LOCAL_TRAIN_DIR)
+    
+    num_videos = 0
+    if dir_exists:
         num_videos = len([d for d in os.listdir(Config.LOCAL_TRAIN_DIR) 
                          if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
-        if num_videos > 0:
-            logger.info(f"   ✅ Training data already exists: {num_videos} videos found")
-            return
+    
+    if json_exists and dir_exists and num_videos > 0:
+        logger.info(f"   ✅ Training data validated: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
+        return
+    
+    # Log reason for download
+    if not json_exists:
+        logger.info(f"   Missing annotations: {Config.LOCAL_JSON_PATH}")
+    if not dir_exists:
+        logger.info(f"   Missing data directory: {Config.LOCAL_TRAIN_DIR}")
+    elif num_videos == 0:
+        logger.info(f"   Data directory is empty: {Config.LOCAL_TRAIN_DIR}")
+    
+    logger.info("   🚀 Triggering download from GCS...")
     
     logger.info("   Downloading data from GCS...")
     os.makedirs(Config.LOCAL_BASE_DIR, exist_ok=True)
@@ -178,12 +194,17 @@ def check_and_download_data():
             logger.info("   🧹 Cleaned up zip file")
             
         # Verify download
-        if os.path.exists(Config.LOCAL_TRAIN_DIR):
+        dir_exists_now = os.path.exists(Config.LOCAL_TRAIN_DIR)
+        if dir_exists_now:
             num_videos = len([d for d in os.listdir(Config.LOCAL_TRAIN_DIR) 
                              if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
-            logger.info(f"   ✅ Training data ready: {num_videos} videos found")
+            logger.info(f"   ✅ Training data ready: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
         else:
-            logger.warning("   ⚠️  Warning: LOCAL_TRAIN_DIR not found after extraction. Check zip structure.")
+            logger.error(f"   ❌ Error: Expected data directory {Config.LOCAL_TRAIN_DIR} not found after extraction.")
+            # List what was actually extracted to help debug zip structure
+            actual_contents = os.listdir(Config.LOCAL_BASE_DIR)
+            logger.error(f"   Contents of {Config.LOCAL_BASE_DIR}: {actual_contents[:10]}...")
+            raise RuntimeError(f"Zip extraction did not create expected directory: {Config.LOCAL_TRAIN_DIR}")
             
     except Exception as e:
         logger.error(f"❌ Data download/extraction failed: {e}")

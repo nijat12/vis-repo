@@ -104,40 +104,41 @@ class ResultsTracker:
         Save results to local Excel file with multiple sheets.
         All sheets are TRANSPOSED: data extends per column, labels per row.
         """
+        if not self.summary_data and not self.detailed_data:
+            logger.debug("No data to save yet.")
+            return
+
         try:
             with pd.ExcelWriter(self.local_path, engine='openpyxl') as writer:
-                # Sheet 1: Transposed Summary (pipelines as columns, metrics as rows)
+                # Need at least one sheet to avoid 'At least one sheet must be visible'
+                has_sheets = False
+
+                # Sheet 1: Transposed Summary
                 if self.summary_data:
                     summary_df = pd.DataFrame(self.summary_data)
-                    # Already transposed: pipelines are columns, metrics are rows
                     summary_df.to_excel(writer, sheet_name='Summary')
+                    has_sheets = True
                 
-                # Sheets 2+: Transposed detailed per-image results
-                # Frames as columns, metrics as rows
+                # Sheets 2+: Detailed results
                 for pipeline_name, data in self.detailed_data.items():
                     if data:
                         detailed_df = pd.DataFrame(data)
-                        
-                        # Create column names combining video and frame
                         if 'video' in detailed_df.columns and 'frame' in detailed_df.columns:
                             detailed_df['video_frame'] = detailed_df['video'] + '_' + detailed_df['frame']
-                            
-                            # Set video_frame as index
                             detailed_df = detailed_df.set_index('video_frame')
-                            
-                            # Drop redundant columns
                             cols_to_drop = ['video', 'frame', 'image_path']
                             detailed_df = detailed_df.drop(columns=[c for c in cols_to_drop if c in detailed_df.columns])
-                            
-                            # Transpose: metrics become rows, frames become columns
                             transposed_df = detailed_df.T
                         else:
-                            # Fallback: standard transpose
                             transposed_df = detailed_df.T
                         
-                        # Truncate sheet name to 31 chars (Excel limit)
                         sheet_name = f"{pipeline_name}_details"[:31]
                         transposed_df.to_excel(writer, sheet_name=sheet_name)
+                        has_sheets = True
+
+                if not has_sheets:
+                    # Fallback empty sheet
+                    pd.DataFrame({"Status": ["No data"]}).to_excel(writer, sheet_name='Empty')
             
             logger.debug(f"✅ Saved local results to {self.local_path}")
             
@@ -145,33 +146,31 @@ class ResultsTracker:
             logger.error(f"❌ Failed to save local results: {e}")
     
     def upload_to_gcs(self):
-        """Upload results file to GCS bucket."""
+        """Upload results file to GCS bucket using Python client."""
         if not os.path.exists(self.local_path):
             logger.warning(f"⚠️  Local file not found: {self.local_path}")
             return False
         
         try:
+            from google.cloud import storage
             logger.info(f"☁️  Uploading results to GCS: {self.gcs_path}")
             
-            result = subprocess.run(
-                ["gsutil", "cp", self.local_path, self.gcs_path],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+            # Use VM default credentials or provided key file (via default behavior)
+            client = storage.Client()
+            bucket = client.bucket(Config.BUCKET_NAME)
             
-            if result.returncode == 0:
-                logger.info(f"✅ Results uploaded to GCS: {self.gcs_path}")
-                return True
-            else:
-                logger.error(f"❌ GCS upload failed: {result.stderr}")
-                return False
+            # Destination path in GCS
+            blob_name = f"results/{self.local_filename}"
+            blob = bucket.blob(blob_name)
+            
+            blob.upload_from_filename(self.local_path)
+            
+            logger.info(f"✅ Results uploaded to GCS: {self.gcs_path}")
+            return True
                 
-        except subprocess.TimeoutExpired:
-            logger.error("❌ GCS upload timeout (5 min)")
-            return False
         except Exception as e:
             logger.error(f"❌ GCS upload error: {e}")
+            logger.error("   Check if VM service account has 'Storage Object Admin' role.")
             return False
     
     def finalize(self):
