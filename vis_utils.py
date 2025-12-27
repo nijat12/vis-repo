@@ -233,7 +233,10 @@ def check_and_download_data():
 
 
 def load_json_ground_truth(json_path: str) -> Dict:
-    """Load ground truth annotations from JSON file."""
+    """
+    Load ground truth annotations from COCO-style JSON file.
+    Returns a dictionary mapping 'video_name/frame_name' to a list of bounding boxes [x, y, w, h].
+    """
     logger.info(f"📖 Loading ground truth from {json_path}")
     
     if not os.path.exists(json_path):
@@ -244,9 +247,28 @@ def load_json_ground_truth(json_path: str) -> Dict:
         with open(json_path, 'r') as f:
             data = json.load(f)
         
-        num_images = len(data)
-        logger.info(f"✅ Loaded {num_images} annotated images")
-        return data
+        # Index images by ID
+        images = {img['id']: img for img in data.get('images', [])}
+        
+        # Index annotations by image ID
+        processed_data = {}
+        for ann in data.get('annotations', []):
+            img_id = ann.get('image_id')
+            if img_id not in images:
+                continue
+            
+            img_info = images[img_id]
+            file_name = img_info.get('file_name') # Format: "0001/00001.jpg"
+            
+            if file_name not in processed_data:
+                processed_data[file_name] = []
+            
+            # Bbox is already in [x, y, w, h] format in COCO
+            processed_data[file_name].append(ann.get('bbox'))
+        
+        num_images = len(processed_data)
+        logger.info(f"✅ Loaded ground truth for {num_images} images")
+        return processed_data
         
     except Exception as e:
         logger.error(f"❌ Failed to load ground truth: {e}")
