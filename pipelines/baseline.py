@@ -1,8 +1,8 @@
 """
-Baseline Pipeline: YOLOv5n with 4x3 Tiled Inference
+Baseline Pipeline: YOLOv5 with 4x3 Tiled Inference
 
 This pipeline implements the baseline strategy using:
-- YOLOv5n pretrained model
+- YOLOv5 pretrained model
 - 4x3 grid tiling with overlap for better small object detection
 - Batch inference optimization
 - Center distance matching for evaluation
@@ -115,12 +115,12 @@ def get_tiled_predictions(model, img, img_size, device):
 @register_pipeline("baseline")
 def run_baseline_pipeline():
     """
-    Execute the baseline pipeline with YOLOv5n tiled inference.
+    Execute the baseline pipeline with YOLOv5 tiled inference.
     
     Returns:
         Dict with execution metrics and results path
     """
-    logger.info("STARTING BASELINE PIPELINE (YOLOv5n + 4x3 Tiling)")
+    logger.info("STARTING BASELINE PIPELINE (YOLOv5 + 4x3 Tiling)")
     
     # Load configuration
     cfg = Config.BASELINE_CONFIG

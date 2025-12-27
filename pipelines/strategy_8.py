@@ -1,9 +1,9 @@
 """
-Strategy 8 Pipeline: YOLO on ROIs (Region of Interest)
+Strategy 8 Pipeline: YOLOv5 on ROIs (Region of Interest)
 
 Implements efficient detection using:
 - Motion compensation for proposal generation
-- YOLO inference only on ROI crops
+- YOLOv5 inference only on ROI crops
 - Configurable detection frequency
 - Optional full-frame processing at intervals
 """
@@ -44,7 +44,7 @@ def _expand_roi_xywh(box, w_img, h_img, scale=2.0, min_size=256):
 
 
 def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, device, roi_scale, min_roi, max_rois, fullframe_every, frame_idx):
-    """Run YOLO only on ROI crops around proposals."""
+    """Run YOLOv5 only on ROI crops around proposals."""
     if model is None:
         return []
 
@@ -105,9 +105,9 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, device, roi_sc
 
 @register_pipeline("strategy_8")
 def run_strategy_8_pipeline():
-    """Execute Strategy 8 pipeline with YOLO on ROIs."""
+    """Execute Strategy 8 pipeline with YOLOv5 on ROIs."""
     logger.info("=" * 70)
-    logger.info("STARTING STRATEGY 8 PIPELINE (YOLO on ROIs)")
+    logger.info("STARTING STRATEGY 8 PIPELINE (YOLOv5 on ROIs)")
     logger.info("=" * 70)
     
     cfg = Config.STRATEGY_8_CONFIG
@@ -206,7 +206,7 @@ def run_strategy_8_pipeline():
                                 x, y, w, h = cv2.boundingRect(cnt)
                                 proposals.append([x, y, w, h])
 
-                        # Run YOLO on ROIs
+                        # Run YOLOv5 on ROIs
                         if len(proposals) > 0 or (cfg['fullframe_every'] and i % cfg['fullframe_every'] == 0):
                             raw_detections = get_roi_predictions(
                                 model, frame, proposals, cfg['img_size'], device,

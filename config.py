@@ -21,9 +21,9 @@ class Config:
     # Enable/disable pipelines independently
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
-        "baseline",      # YOLOv5n with 4x3 tiled inference
+        "baseline",      # YOLOv5 with 4x3 tiled inference
         # "strategy_7",  # Motion compensation + CNN verifier
-        "strategy_8",  # YOLO on ROIs
+        "strategy_8",  # YOLOv5 on ROIs
     ]
     
     # ==========================================
@@ -66,7 +66,7 @@ class Config:
     # BASELINE PIPELINE CONFIG
     # ==========================================
     BASELINE_CONFIG: Dict[str, Any] = {
-        "model_name": "yolov5n",
+        "model_name": "yolov5s6",
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -90,7 +90,7 @@ class Config:
     # STRATEGY 8 CONFIG
     # ==========================================
     STRATEGY_8_CONFIG: Dict[str, Any] = {
-        "model_name": "yolov5n",
+        "model_name": "yolov5s6",
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -99,7 +99,7 @@ class Config:
         "min_roi_size": 192,
         "max_rois": 3,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 3,  # Run YOLO every N frames
+        "detect_every": 3,  # Run YOLOv5 every N frames
         "output_csv": "strat_8_cpu.csv",
     }
     
