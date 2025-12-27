@@ -27,6 +27,7 @@ class Config:
         # "strategy_7",  # Motion compensation + CNN verifier
         # "strategy_8",  # YOLOv11s on ROIs
         # "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
+        "strategy_10", # Motion Proposals + YOLO Classification
     ]
     
     # ==========================================
@@ -140,6 +141,17 @@ class Config:
     }
     
     # ==========================================
+    # STRATEGY 10 CONFIG (Motion + YOLO)
+    # ==========================================
+    STRATEGY_10_CONFIG: Dict[str, Any] = {
+        "model_name": "yolo11n.pt",
+        "conf_thresh": 0.1,          # Confidence for YOLO classification
+        "motion_thresh_scale": 4.0,  # multiplier for motion threshold
+        "bird_class_id": 14,
+        "output_csv": "strat_10_cpu.csv",
+    }
+    
+    # ==========================================
     # PARALLEL EXECUTION
     # ==========================================
     # Number of CPU workers for parallel pipeline execution
@@ -220,6 +232,8 @@ class Config:
             filename = cls.STRATEGY_8_CONFIG["output_csv"]
         elif pipeline_name == "strategy_9":
             filename = cls.STRATEGY_9_CONFIG["output_csv"]
+        elif pipeline_name == "strategy_10":
+            filename = cls.STRATEGY_10_CONFIG["output_csv"]
         else:
             filename = f"{pipeline_name}_output.csv"
         

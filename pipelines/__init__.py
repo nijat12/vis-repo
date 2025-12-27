@@ -20,7 +20,7 @@ def register_pipeline(name: str):
     return decorator
 
 # Import modules to trigger registration
-from . import baseline, strategy_2, strategy_7, strategy_8, strategy_9
+from . import baseline, strategy_2, strategy_7, strategy_8, strategy_9, strategy_10
 
 def get_pipeline(name: str) -> Callable:
     """Get a pipeline function by name."""
