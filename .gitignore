@@ -6,3 +6,4 @@ nohup.out
 train.json
 logs/
 metrics/*
+private_*
