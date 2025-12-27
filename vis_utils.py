@@ -14,6 +14,8 @@ import os
 import json
 import logging
 import subprocess
+import zipfile
+import shutil
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import cv2
@@ -63,48 +65,42 @@ def setup_logging():
     return logger
 
 
-def authenticate_gcs() -> bool:
+def authenticate_gcs(key_file: Optional[str] = None) -> bool:
     """
-    Verify GCS access using VM default credentials.
+    Verify GCS access using provided key file or VM default credentials.
     
-    Uses google-cloud-storage Python library which automatically uses:
-    - VM service account credentials (when running on GCP)
-    - Application default credentials (local development)
-    
+    Args:
+        key_file: Path to service account JSON key file (optional)
+        
     Returns:
         True if authentication successful
         
     Raises:
         RuntimeError: If GCS access verification fails
     """
-    logger.info("🔐 Verifying GCS access using VM credentials...")
+    if key_file:
+        logger.info(f"🔐 Verifying GCS access using key file: {key_file}...")
+    else:
+        logger.info("🔐 Verifying GCS access using VM default credentials...")
     
     try:
         from google.cloud import storage
         
-        # Create storage client (automatically uses VM credentials)
-        client = storage.Client()
+        # Create storage client
+        if key_file and os.path.exists(key_file):
+            client = storage.Client.from_service_account_json(key_file)
+            logger.info(f"✅ Using service account key: {key_file}")
+        else:
+            client = storage.Client()
+            logger.info("✅ Using VM default credentials")
         
         # Test access by listing bucket
         bucket = client.bucket(Config.BUCKET_NAME)
         
         # Try to list objects (this verifies permissions)
-        blobs = list(bucket.list_blobs(max_results=1))
+        list(bucket.list_blobs(max_results=1))
         
         logger.info(f"✅ GCS bucket access verified: {Config.BUCKET_NAME}")
-        logger.info("   Using VM default credentials")
-        
-        if Config.ENABLE_CLOUD_LOGGING:
-            try:
-                import google.cloud.logging
-                cloud_client = google.cloud.logging.Client()
-                cloud_logger = cloud_client.logger("vis-pipeline")
-                cloud_logger.log_text(
-                    f"✅ GCS authentication successful for bucket: {Config.BUCKET_NAME}",
-                    severity="INFO"
-                )
-            except Exception:
-                pass
         
         return True
         
@@ -131,7 +127,7 @@ def authenticate_gcs() -> bool:
 
 def check_and_download_data():
     """
-    Check if training data exists locally, download from GCS if not.
+    Check if training data exists locally, download from GCS and unzip if not.
     Uses google-cloud-storage Python library with VM default credentials.
     """
     logger.info("📥 Checking training data...")
@@ -145,7 +141,7 @@ def check_and_download_data():
             return
     
     logger.info("   Downloading data from GCS...")
-    os.makedirs(Config.LOCAL_TRAIN_DIR, exist_ok=True)
+    os.makedirs(Config.LOCAL_BASE_DIR, exist_ok=True)
     
     try:
         from google.cloud import storage
@@ -153,47 +149,48 @@ def check_and_download_data():
         client = storage.Client()
         bucket = client.bucket(Config.BUCKET_NAME)
         
-        # Download annotation JSON
+        # 1. Download annotation JSON
         logger.info(f"   Downloading annotations...")
-        blob = bucket.blob("train.json")
-        blob.download_to_filename(Config.LOCAL_JSON_PATH)
+        blob_json = bucket.blob(Config.GCS_JSON_URL)
+        blob_json.download_to_filename(Config.LOCAL_JSON_PATH)
         logger.info("   ✅ Annotations downloaded")
         
-        # Download training data
-        logger.info(f"   Downloading training data (this may take a while)...")
+        # 2. Download training ZIP
+        logger.info(f"   Downloading training ZIP: {Config.GCS_TRAIN_ZIP}")
+        blob_zip = bucket.blob(Config.GCS_TRAIN_ZIP)
         
-        # List all blobs in trainxs/ directory
-        blobs = bucket.list_blobs(prefix="trainxs/")
+        # Check if zip exists in GCS
+        if not blob_zip.exists():
+            raise RuntimeError(f"Zip file '{Config.GCS_TRAIN_ZIP}' not found in bucket '{Config.BUCKET_NAME}'")
+            
+        blob_zip.download_to_filename(Config.LOCAL_ZIP_PATH)
+        logger.info("   ✅ Zip file downloaded")
         
-        downloaded_count = 0
-        for blob in blobs:
-            # Skip directory markers
-            if blob.name.endswith('/'):
-                continue
-            
-            # Create local path
-            local_path = os.path.join(Config.LOCAL_BASE_DIR, blob.name)
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            
-            # Download file
-            blob.download_to_filename(local_path)
-            downloaded_count += 1
-            
-            if downloaded_count % 100 == 0:
-                logger.info(f"   Downloaded {downloaded_count} files...")
+        # 3. Extract training ZIP
+        logger.info(f"   Extracting {Config.LOCAL_ZIP_PATH}...")
+        with zipfile.ZipFile(Config.LOCAL_ZIP_PATH, 'r') as zip_ref:
+            zip_ref.extractall(Config.LOCAL_BASE_DIR)
+        logger.info("   ✅ Extraction complete")
         
+        # 4. Clean up zip file to save space
+        if os.path.exists(Config.LOCAL_ZIP_PATH):
+            os.remove(Config.LOCAL_ZIP_PATH)
+            logger.info("   🧹 Cleaned up zip file")
+            
         # Verify download
-        num_videos = len([d for d in os.listdir(Config.LOCAL_TRAIN_DIR) 
-                         if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
-        
-        logger.info(f"   ✅ Training data downloaded: {num_videos} videos, {downloaded_count} total files")
-        
-        if num_videos == 0:
-            raise RuntimeError("No video folders found after download")
+        if os.path.exists(Config.LOCAL_TRAIN_DIR):
+            num_videos = len([d for d in os.listdir(Config.LOCAL_TRAIN_DIR) 
+                             if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
+            logger.info(f"   ✅ Training data ready: {num_videos} videos found")
+        else:
+            logger.warning("   ⚠️  Warning: LOCAL_TRAIN_DIR not found after extraction. Check zip structure.")
             
     except Exception as e:
-        logger.error(f"❌ Data download failed: {e}")
-        raise RuntimeError(f"Failed to download data from GCS: {e}")
+        logger.error(f"❌ Data download/extraction failed: {e}")
+        # Clean up partial downloads
+        if os.path.exists(Config.LOCAL_ZIP_PATH):
+            os.remove(Config.LOCAL_ZIP_PATH)
+        raise RuntimeError(f"Failed to process data from GCS: {e}")
 
 
 def load_json_ground_truth(json_path: str) -> Dict:

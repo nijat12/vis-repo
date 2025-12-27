@@ -20,7 +20,7 @@ import vis_utils
 import csv_utils
 
 # Import pipeline modules
-from pipelines import get_pipeline, list_pipelines
+from pipelines import get_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +80,10 @@ def main():
         Config.validate()
         logger.info(f"✅ Configuration valid. Enabled pipelines: {Config.ENABLED_PIPELINES}")
         
-        # Authenticate with GCS using VM default credentials
+        # Authenticate with GCS
         logger.info("\n🔐 Authenticating with Google Cloud Storage...")
         try:
-            vis_utils.authenticate_gcs()
+            vis_utils.authenticate_gcs(key_file=Config.SERVICE_ACCOUNT_KEY)
             logger.info("✅ GCS authentication successful")
         except RuntimeError as e:
             logger.critical(f"❌ GCS authentication FAILED: {e}")

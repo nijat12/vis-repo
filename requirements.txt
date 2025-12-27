@@ -1,8 +1,11 @@
 # VIS Pipeline Requirements
 
+# Use CPU-only PyTorch index to save space (prevents CUDA 2GB+ downloads)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Core dependencies
 numpy>=1.23.0
-opencv-python>=4.6.0
+opencv-python-headless>=4.6.0
 pandas>=1.5.0
 torch>=1.8.0
 torchvision>=0.9.0

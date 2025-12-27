@@ -7,7 +7,7 @@ Contains modular pipeline implementations:
 - strategy_8: YOLO on ROIs
 """
 
-from typing import Dict, Callable, Any
+from typing import Dict, Callable, Any, List
 
 # Pipeline registry
 PIPELINES: Dict[str, Callable] = {}
@@ -19,8 +19,15 @@ def register_pipeline(name: str):
         return func
     return decorator
 
+# Import modules to trigger registration
+from . import baseline, strategy_7, strategy_8
+
 def get_pipeline(name: str) -> Callable:
     """Get a pipeline function by name."""
     if name not in PIPELINES:
         raise ValueError(f"Unknown pipeline: {name}. Available: {list(PIPELINES.keys())}")
     return PIPELINES[name]
+
+def list_pipelines() -> List[str]:
+    """List all registered pipelines."""
+    return list(PIPELINES.keys())

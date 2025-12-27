@@ -16,6 +16,10 @@ echo "📦 Updating system packages..."
 sudo apt-get update >> "$LOG_FILE" 2>&1
 sudo apt-get upgrade -y >> "$LOG_FILE" 2>&1
 
+# Install system dependencies for OpenCV and other tools on the host
+echo "🛠️ Installing system dependencies on host..."
+sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev >> "$LOG_FILE" 2>&1
+
 # Install Docker
 echo "🐳 Installing Docker..."
 if ! command -v docker &> /dev/null; then
@@ -53,10 +57,16 @@ echo "🔍 Verifying Docker installation..."
 sudo docker --version
 
 # Build Docker image
+echo "🧹 Cleaning up disk space before build..."
+# Remove unused Docker data (images, containers, networks, and build cache)
+sudo docker system prune -af --volumes >> "$LOG_FILE" 2>&1
+# Clean apt cache
+sudo apt-get clean >> "$LOG_FILE" 2>&1
+
 echo "🔨 Building VIS Pipeline Docker image..."
 cd /home/$USER/vis-repo || { echo "❌ vis-repo directory not found"; exit 1; }
 
-sudo docker build -t vis-pipeline:latest . 2>&1 | tee -a "$LOG_FILE"
+sudo docker build --no-cache -t vis-pipeline:latest . 2>&1 | tee -a "$LOG_FILE"
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     echo "❌ Docker build failed! Check $LOG_FILE for details"

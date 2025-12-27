@@ -34,13 +34,14 @@ class Config:
     
     # GCS bucket and paths
     BUCKET_NAME: str = "vis-data-2025"
-    GCS_TRAIN_DIR: str = f"gs://{BUCKET_NAME}/trainxs"
-    GCS_JSON_URL: str = f"gs://{BUCKET_NAME}/train.json"
+    GCS_TRAIN_ZIP: str = "trainxs.zip"
+    GCS_JSON_URL: str = "train.json"
     
     # Local data paths
     LOCAL_BASE_DIR: str = "./data_local"
     LOCAL_TRAIN_DIR: str = os.path.join(LOCAL_BASE_DIR, "trainxs")
     LOCAL_JSON_PATH: str = "./train.json"
+    LOCAL_ZIP_PATH: str = os.path.join(LOCAL_BASE_DIR, "trainxs.zip")
     
     # ==========================================
     # PROCESSING PARAMETERS
