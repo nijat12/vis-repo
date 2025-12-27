@@ -349,6 +349,9 @@ def run_strategy_7_pipeline():
     logger.info(f"Precision:      {overall_prec:.4f}")
     logger.info(f"Recall:         {overall_rec:.4f}")
     logger.info(f"F1-Score:       {overall_f1:.4f}")
+    logger.info(f"TP:             {total_tp}")
+    logger.info(f"FP:             {total_fp}")
+    logger.info(f"FN:             {total_fn}")
     logger.info("=" * 65)
 
     df = pd.DataFrame(results_data)
