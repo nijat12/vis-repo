@@ -1,8 +1,8 @@
 """
-Baseline Pipeline: YOLOv11s with 4x3 Tiled Inference
+Baseline Pipeline: YOLO with 4x3 Tiled Inference
 
 This pipeline implements the baseline strategy using:
-- YOLOv11s pretrained model (Upgraded from YOLOv5)
+- YOLO pretrained model (Upgraded from YOLO)
 - 4x3 grid tiling with overlap for better small object detection
 - Batch inference optimization
 - Center distance matching for evaluation
@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 
 def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
     """
-    Splits image into a 4x3 Grid (12 tiles) and runs inference using YOLOv11.
+    Splits image into a 4x3 Grid (12 tiles) and runs inference using YOLO.
     Optimization: Sends all 12 tiles in ONE BATCH to maximize throughput.
     
     Args:
-        model: YOLOv11 model (ultralytics)
+        model: YOLO model (ultralytics)
         img: Input image (BGR format)
         img_size: Target size for inference
         conf_thresh: Confidence threshold
@@ -87,7 +87,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
         sub_crops = crops[i : i + CHUNK_SIZE]
         sub_offsets = offsets[i : i + CHUNK_SIZE]
 
-        # YOLOv11 Inference
+        # YOLO Inference
         # verbose=False reduces log spam
         results = model(sub_crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
 
@@ -137,9 +137,9 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
 @register_pipeline("baseline")
 def run_baseline_pipeline():
     """
-    Execute the baseline pipeline with YOLOv11 tiled inference.
+    Execute the baseline pipeline with YOLO tiled inference.
     """
-    logger.info("STARTING BASELINE PIPELINE (YOLOv11s + 4x3 Tiling)")
+    logger.info("STARTING BASELINE PIPELINE (YOLO + 4x3 Tiling)")
     
     # Load configuration
     cfg = Config.BASELINE_CONFIG
@@ -294,7 +294,7 @@ def run_baseline_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Baseline - YOLOv11s):")
+    logger.info("FINAL RESULTS (Baseline - YOLO):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")

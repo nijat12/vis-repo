@@ -1,9 +1,9 @@
 """
-Strategy 9 Pipeline: SAHI Slicing + YOLOv11 + Kalman/Hungarian (DotD)
+Strategy 9 Pipeline: SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
 
 Implements the architecture defined in the class diagram:
 1. Slicing: 3840x2160 -> 640x640 slices (with overlap)
-2. Detection: YOLOv11 (pretrained) on slices
+2. Detection: YOLO (pretrained) on slices
 3. Merger: NMS to combine slice detections
 4. Tracking: Kalman Filter + Hungarian Algorithm (DotD cost)
 """
@@ -19,7 +19,7 @@ import cv2
 import torch
 from scipy.optimize import linear_sum_assignment
 
-# Attempt to import ultralytics for YOLOv11
+# Attempt to import ultralytics for YOLO
 try:
     from ultralytics import YOLO
 except ImportError:
@@ -300,9 +300,9 @@ def nms_global(detections, iou_thresh=0.5):
 def run_strategy_9_pipeline():
     """
     Execute Strategy 9 Pipeline:
-    SAHI Slicer -> YOLOv11 -> NMS -> Kalman/Hungarian Tracker
+    SAHI Slicer -> YOLO -> NMS -> Kalman/Hungarian Tracker
     """
-    logger.info("STARTING STRATEGY 9 PIPELINE (SAHI + YOLOv11 + Kalman/Hungarian)")
+    logger.info("STARTING STRATEGY 9 PIPELINE (SAHI + YOLO + Kalman/Hungarian)")
 
     # 1. Configuration Setup
     try:
@@ -311,7 +311,7 @@ def run_strategy_9_pipeline():
         logger.error("❌ STRATEGY_9_CONFIG not found in Config class!")
         raise
 
-    # 2. Load Model (YOLOv11)
+    # 2. Load Model (YOLO)
     if YOLO is None:
         logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
         raise ImportError("ultralytics library missing")
@@ -499,7 +499,7 @@ def run_strategy_9_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Strategy 9 - SAHI+YOLOv11+Kalman):")
+    logger.info("FINAL RESULTS (Strategy 9 - SAHI+YOLO+Kalman):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")

@@ -1,12 +1,12 @@
 """
-Strategy 2 Pipeline: GMC + Dynamic Thresholding + YOLOv11s Refiner
+Strategy 2 Pipeline: GMC + Dynamic Thresholding + YOLO Refiner
 
 This pipeline migrates the logic from Strategy 2 Colab:
 1. Global Motion Compensation (GMC) to align frames.
 2. Dynamic Statistical Thresholding (mean + 4*std) to isolate motion.
 3. Morphological opening (5x5 kernel) to remove noise.
 4. Contour filtering (area, aspect ratio, border) to generate ROIs.
-5. YOLOv11s inference on these ROIs for final bird detection.
+5. YOLO inference on these ROIs for final bird detection.
 6. Persistence tracking for temporal consistency.
 """
 
@@ -49,7 +49,7 @@ def _expand_roi_xywh(box, w_img, h_img, scale=2.0, min_size=192):
 
 
 def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, classes, roi_scale, min_roi, max_rois):
-    """Run YOLOv11 only on ROI crops around proposals."""
+    """Run YOLO only on ROI crops around proposals."""
     if model is None or not proposals_xywh:
         return []
 
@@ -111,9 +111,9 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
 
 @register_pipeline("strategy_2")
 def run_strategy_2_pipeline():
-    """Execute Strategy 2 pipeline: GMC + Dynamic Threshold + YOLOv11s Refiner."""
+    """Execute Strategy 2 pipeline: GMC + Dynamic Threshold + YOLO Refiner."""
     logger.info("=" * 70)
-    logger.info("STARTING STRATEGY 2 PIPELINE (GMC + Dynamic Thresholding + YOLOv11s)")
+    logger.info("STARTING STRATEGY 2 PIPELINE (GMC + Dynamic Thresholding + YOLO)")
     logger.info("=" * 70)
     
     cfg = Config.STRATEGY_2_CONFIG
@@ -216,7 +216,7 @@ def run_strategy_2_pipeline():
                                 if x > border and y > border and (x+w) < (w_img-border) and (y+h) < (h_img-border):
                                     proposals.append([x, y, w, h])
 
-            # 5. YOLOv11s ROI Refiner (The "Migration" to Deep Learning)
+            # 5. YOLO ROI Refiner (The "Migration" to Deep Learning)
             raw_detections = []
             if proposals:
                 raw_detections = get_roi_predictions(
@@ -304,7 +304,7 @@ def run_strategy_2_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Strategy 2 - GMC+Dynamic+YOLO11s):")
+    logger.info("FINAL RESULTS (Strategy 2 - GMC+Dynamic+YOLO):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")

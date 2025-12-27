@@ -22,11 +22,11 @@ class Config:
     # Enable/disable pipelines independently
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
-        # "baseline",      # YOLOv11s with 4x3 tiled inference
-        # "strategy_2",    # GMC + Dynamic Thresholding + YOLOv11s Refiner
-        # "strategy_7",  # Motion compensation + CNN verifier
-        # "strategy_8",  # YOLOv11s on ROIs
-        # "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
+        "baseline",      # YOLO with 4x3 tiled inference
+        "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
+        "strategy_7",  # Motion compensation + CNN verifier
+        "strategy_8",  # YOLO on ROIs
+        "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
         "strategy_10", # Motion Proposals + YOLO Classification
     ]
     
@@ -66,11 +66,13 @@ class Config:
     # Output directory for results
     OUTPUT_DIR: str = "./metrics"
     
+    UNIFIED_MODEL_NAME: str = "yolo12l.pt"
+    
     # ==========================================
     # BASELINE PIPELINE CONFIG
     # ==========================================
     BASELINE_CONFIG: Dict[str, Any] = {
-        "model_name": "yolo11s.pt",
+        "model_name": UNIFIED_MODEL_NAME,
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -79,10 +81,10 @@ class Config:
     }
     
     # ==========================================
-    # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLOv11s)
+    # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLO)
     # ==========================================
     STRATEGY_2_CONFIG: Dict[str, Any] = {
-        "model_name": "yolo11s.pt",
+        "model_name": UNIFIED_MODEL_NAME,
         "img_size": 1280,
         "conf_thresh": 0.01,
         "model_classes": [14],
@@ -112,7 +114,7 @@ class Config:
     # STRATEGY 8 CONFIG
     # ==========================================
     STRATEGY_8_CONFIG: Dict[str, Any] = {
-        "model_name": "yolo11s.pt",
+        "model_name": UNIFIED_MODEL_NAME,
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -121,15 +123,15 @@ class Config:
         "min_roi_size": 192,
         "max_rois": 3,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 3,  # Run YOLOv11s every N frames
+        "detect_every": 3,  # Run YOLO every N frames
         "output_csv": "strat_8_cpu.csv",
     }
     
     # ==========================================
-    # STRATEGY 9 CONFIG (SAHI + YOLOv11 + Kalman)
+    # STRATEGY 9 CONFIG (SAHI + YOLO + Kalman)
     # ==========================================
     STRATEGY_9_CONFIG: Dict[str, Any] = {
-        "model_path": "yolo11s.pt",  # Using YOLOv11
+        "model_path": UNIFIED_MODEL_NAME,  # Using YOLO
         "conf_thresh": 0.2,          # Confidence threshold (from diagram)
         "slice_size": 640,           # Slice dimensions (from diagram)
         "overlap": 0.2,              # Overlap ratio (from diagram)
@@ -144,7 +146,7 @@ class Config:
     # STRATEGY 10 CONFIG (Motion + YOLO)
     # ==========================================
     STRATEGY_10_CONFIG: Dict[str, Any] = {
-        "model_name": "yolo11s.pt",
+        "model_name": UNIFIED_MODEL_NAME,
         "conf_thresh": 0.1,          # Confidence for YOLO classification
         "motion_thresh_scale": 4.0,  # multiplier for motion threshold
         "bird_class_id": 14,

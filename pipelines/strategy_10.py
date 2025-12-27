@@ -4,7 +4,7 @@ Strategy 10 Pipeline: Motion Proposals + YOLO Classification
 This pipeline implements a hybrid approach:
 1. Frame Alignment (GMC) to compensate for camera motion.
 2. Motion Proposals: Detect moving blobs using frame differencing.
-3. Precision Filter: Use a YOLOv5 classifier to verify if proposals contain birds.
+3. Precision Filter: Use a YOLO classifier to verify if proposals contain birds.
 """
 
 import os
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # ==========================================
 def load_classifier_model():
     """
-    Loads YOLOv5 (or V11 if compatible) as a classifier.
-    We use 'yolov5s6' because it's trained on large images and is robust.
+    Loads YOLO (or V11 if compatible) as a classifier.
+    We use 'YOLO' because it's trained on large images and is robust.
     """
     cfg = Config.STRATEGY_10_CONFIG
     model_name = cfg["model_name"]
@@ -47,7 +47,7 @@ def load_classifier_model():
         logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
         return None
 
-    logger.info(f"⏳ Loading YOLOv11: {model_name}...")
+    logger.info(f"⏳ Loading YOLO: {model_name}...")
     try:
         model = YOLO(model_name)
         logger.info(f"✅ {model_name} Loaded.")

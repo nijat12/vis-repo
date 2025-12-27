@@ -1,9 +1,9 @@
 """
-Strategy 8 Pipeline: YOLOv11s on ROIs (Region of Interest)
+Strategy 8 Pipeline: YOLO on ROIs (Region of Interest)
 
 Implements efficient detection using:
 - Motion compensation for proposal generation
-- YOLOv11s inference only on ROI crops
+- YOLO inference only on ROI crops
 - Configurable detection frequency
 - Optional full-frame processing at intervals
 """
@@ -50,7 +50,7 @@ def _expand_roi_xywh(box, w_img, h_img, scale=2.0, min_size=256):
 
 
 def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, classes, roi_scale, min_roi, max_rois, fullframe_every, frame_idx):
-    """Run YOLOv11 only on ROI crops around proposals."""
+    """Run YOLO only on ROI crops around proposals."""
     if model is None:
         return []
 
@@ -121,8 +121,8 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
 
 @register_pipeline("strategy_8")
 def run_strategy_8_pipeline():
-    """Execute Strategy 8 pipeline with YOLOv11s on ROIs."""
-    logger.info("STARTING STRATEGY 8 PIPELINE (YOLOv11s on ROIs)")
+    """Execute Strategy 8 pipeline with YOLO on ROIs."""
+    logger.info("STARTING STRATEGY 8 PIPELINE (YOLO on ROIs)")
     
     cfg = Config.STRATEGY_8_CONFIG
     
@@ -214,7 +214,7 @@ def run_strategy_8_pipeline():
                                 x, y, w, h = cv2.boundingRect(cnt)
                                 proposals.append([x, y, w, h])
 
-                        # Run YOLOv11 on ROIs
+                        # Run YOLO on ROIs
                         if len(proposals) > 0 or (cfg['fullframe_every'] and i % cfg['fullframe_every'] == 0):
                             raw_detections = get_roi_predictions(
                                 model, frame, proposals, cfg['img_size'], cfg['conf_thresh'], cfg['model_classes'],
@@ -306,7 +306,7 @@ def run_strategy_8_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Strategy 8 - YOLOv11s):")
+    logger.info("FINAL RESULTS (Strategy 8 - YOLO):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")
