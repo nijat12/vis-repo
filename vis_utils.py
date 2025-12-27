@@ -30,8 +30,14 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-def setup_logging():
-    """Configure logging with file and console handlers, plus optional Cloud Logging."""
+def setup_logging(log_name: Optional[str] = None):
+    """
+    Configure logging with file and console handlers, plus optional Cloud Logging.
+    
+    Args:
+        log_name: Optional basename for the log file (e.g. 'baseline.log').
+                 If None, uses Config.LOG_FILE.
+    """
     logger = logging.getLogger()
     
     # Avoid duplicate handlers if already configured
@@ -41,9 +47,15 @@ def setup_logging():
     logger.setLevel(getattr(logging, Config.LOG_LEVEL))
     
     # Set GOOGLE_APPLICATION_CREDENTIALS if key file exists
-    # Do this early so any subsequent library imports/initializations see it
     if Config.SERVICE_ACCOUNT_KEY and os.path.exists(Config.SERVICE_ACCOUNT_KEY):
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath(Config.SERVICE_ACCOUNT_KEY)
+    
+    # Ensure logs directory exists
+    os.makedirs(Config.LOG_DIR, exist_ok=True)
+    
+    # Determine log path
+    filename = log_name if log_name else Config.LOG_FILE
+    log_path = os.path.join(Config.LOG_DIR, filename)
     
     # Console handler
     console_handler = logging.StreamHandler()
@@ -55,7 +67,7 @@ def setup_logging():
     logger.addHandler(console_handler)
     
     # File handler
-    file_handler = logging.FileHandler(Config.LOG_FILE)
+    file_handler = logging.FileHandler(log_path)
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -71,7 +83,7 @@ def setup_logging():
             cloud_handler = client.get_default_handler()
             cloud_handler.setLevel(logging.INFO)
             logger.addHandler(cloud_handler)
-            logger.info("✅ Google Cloud Logging enabled")
+            logger.info(f"✅ Google Cloud Logging enabled (Log: {filename})")
         except ImportError:
             logger.warning("⚠️  google-cloud-logging not installed. Cloud Logging disabled.")
         except Exception as e:

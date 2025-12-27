@@ -25,8 +25,8 @@ class ResultsTracker:
     Manages real-time results tracking and saving.
     
     Features:
-    - Transposed summary sheet (pipelines as columns, metrics as rows)
-    - Transposed detail sheets (frames as columns, metrics as rows)
+    - Summary CSV (transposed: pipelines as columns, metrics as rows)
+    - Detailed CSVs per pipeline
     - Automatic GCS upload with timestamp
     - Incremental saving to prevent data loss
     """
@@ -43,21 +43,20 @@ class ResultsTracker:
         # Generate timestamp: YYMMDD_HHMMSS
         self.timestamp = self.start_time.strftime("%y%m%d_%H%M%S")
         
-        # Local file paths
-        self.local_filename = f"results_{self.timestamp}.xlsx"
-        self.local_path = os.path.join(Config.OUTPUT_DIR, self.local_filename)
-        
-        # GCS path
-        self.gcs_path = f"gs://{Config.BUCKET_NAME}/results/{self.local_filename}"
+        # Base names for tracking
+        self.base_name = f"results_{self.timestamp}"
         
         # Data storage
         self.summary_data: Dict[str, Dict[str, Any]] = {}
         self.detailed_data: Dict[str, List[Dict[str, Any]]] = {}
         
+        # Tracking saved files for GCS upload
+        self.saved_files: List[str] = []
+        
         # Ensure output directory exists
         os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
         
-        logger.info(f"📊 Results tracker initialized: {self.local_filename}")
+        logger.info(f"📊 Results tracker initialized: {self.base_name}")
     
     def update_summary(self, pipeline_name: str, metrics: Dict[str, Any]):
         """
@@ -74,11 +73,6 @@ class ResultsTracker:
     def add_image_result(self, pipeline_name: str, image_data: Dict[str, Any]):
         """
         Add per-image detailed result for a pipeline.
-        
-        Args:
-            pipeline_name: Name of the pipeline
-            image_data: Dictionary with image-level metrics
-                Expected keys: video, frame, image_path, tp, fp, fn, predictions, ground_truth
         """
         if pipeline_name not in self.detailed_data:
             self.detailed_data[pipeline_name] = []
@@ -88,10 +82,6 @@ class ResultsTracker:
     def save_batch(self, pipeline_name: str, batch_size: int = 100):
         """
         Save results after processing a batch of images.
-        
-        Args:
-            pipeline_name: Name of the pipeline
-            batch_size: Number of images per batch (for logging)
         """
         if pipeline_name in self.detailed_data:
             num_images = len(self.detailed_data[pipeline_name])
@@ -101,84 +91,70 @@ class ResultsTracker:
     
     def _save_local(self):
         """
-        Save results to local Excel file with multiple sheets.
-        All sheets are TRANSPOSED: data extends per column, labels per row.
+        Save results to local CSV files.
         """
         if not self.summary_data and not self.detailed_data:
             logger.debug("No data to save yet.")
             return
 
         try:
-            with pd.ExcelWriter(self.local_path, engine='openpyxl') as writer:
-                # Need at least one sheet to avoid 'At least one sheet must be visible'
-                has_sheets = False
-
-                # Sheet 1: Transposed Summary
-                if self.summary_data:
-                    summary_df = pd.DataFrame(self.summary_data)
-                    summary_df.to_excel(writer, sheet_name='Summary')
-                    has_sheets = True
-                
-                # Sheets 2+: Detailed results
-                for pipeline_name, data in self.detailed_data.items():
-                    if data:
-                        detailed_df = pd.DataFrame(data)
-                        if 'video' in detailed_df.columns and 'frame' in detailed_df.columns:
-                            detailed_df['video_frame'] = detailed_df['video'] + '_' + detailed_df['frame']
-                            detailed_df = detailed_df.set_index('video_frame')
-                            cols_to_drop = ['video', 'frame', 'image_path']
-                            detailed_df = detailed_df.drop(columns=[c for c in cols_to_drop if c in detailed_df.columns])
-                            transposed_df = detailed_df.T
-                        else:
-                            transposed_df = detailed_df.T
-                        
-                        sheet_name = f"{pipeline_name}_details"[:31]
-                        transposed_df.to_excel(writer, sheet_name=sheet_name)
-                        has_sheets = True
-
-                if not has_sheets:
-                    # Fallback empty sheet
-                    pd.DataFrame({"Status": ["No data"]}).to_excel(writer, sheet_name='Empty')
+            self.saved_files = []
             
-            logger.debug(f"✅ Saved local results to {self.local_path}")
+            # 1. Summary CSV (Transposed)
+            if self.summary_data:
+                summary_df = pd.DataFrame(self.summary_data)
+                summary_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_summary.csv")
+                summary_df.to_csv(summary_path)
+                self.saved_files.append(summary_path)
+            
+            # 2. Detailed CSVs per pipeline
+            for pipeline_name, data in self.detailed_data.items():
+                if data:
+                    detailed_df = pd.DataFrame(data)
+                    # We'll save these in standard row-oriented format for CSVs
+                    # as transposed CSVs with 1000s of columns are hard to read
+                    det_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_{pipeline_name}.csv")
+                    detailed_df.to_csv(det_path, index=False)
+                    self.saved_files.append(det_path)
+            
+            logger.debug(f"✅ Saved local CSV results ({len(self.saved_files)} files)")
             
         except Exception as e:
             logger.error(f"❌ Failed to save local results: {e}")
     
     def upload_to_gcs(self):
-        """Upload results file to GCS bucket using Python client."""
-        if not os.path.exists(self.local_path):
-            logger.warning(f"⚠️  Local file not found: {self.local_path}")
+        """Upload all generated CSV files to GCS bucket."""
+        if not self.saved_files:
+            logger.warning("⚠️  No files to upload")
             return False
         
+        success = True
         try:
             from google.cloud import storage
-            logger.info(f"☁️  Uploading results to GCS: {self.gcs_path}")
-            
-            # Use VM default credentials or provided key file (via default behavior)
             client = storage.Client()
             bucket = client.bucket(Config.BUCKET_NAME)
             
-            # Destination path in GCS
-            blob_name = f"results/{self.local_filename}"
-            blob = bucket.blob(blob_name)
+            for local_path in self.saved_files:
+                if not os.path.exists(local_path):
+                    continue
+                    
+                filename = os.path.basename(local_path)
+                blob_name = f"results/{filename}"
+                blob = bucket.blob(blob_name)
+                
+                logger.info(f"☁️  Uploading {filename} to GCS...")
+                blob.upload_from_filename(local_path)
             
-            blob.upload_from_filename(self.local_path)
-            
-            logger.info(f"✅ Results uploaded to GCS: {self.gcs_path}")
+            logger.info("✅ All results uploaded to GCS")
             return True
                 
         except Exception as e:
             logger.error(f"❌ GCS upload error: {e}")
-            logger.error("   Check if VM service account has 'Storage Object Admin' role.")
             return False
     
     def finalize(self):
         """
         Finalize results tracking.
-        - Save final local copy
-        - Upload to GCS
-        - Generate summary report
         """
         logger.info("🏁 Finalizing results...")
         
@@ -192,9 +168,8 @@ class ResultsTracker:
         logger.info("\n" + "=" * 70)
         logger.info("RESULTS SUMMARY")
         logger.info("=" * 70)
-        logger.info(f"Local file: {self.local_path}")
-        logger.info(f"GCS file: {self.gcs_path}")
-        logger.info(f"Timestamp: {self.timestamp}")
+        logger.info(f"Files saved to: {Config.OUTPUT_DIR}")
+        logger.info(f"Total files: {len(self.saved_files)}")
         
         if self.summary_data:
             logger.info("\nPipeline Metrics:")
@@ -206,14 +181,12 @@ class ResultsTracker:
                     else:
                         logger.info(f"  {key}: {value}")
         
-        if self.detailed_data:
-            logger.info("\nDetailed Results:")
-            for pipeline_name, data in self.detailed_data.items():
-                logger.info(f"  {pipeline_name}: {len(data)} images tracked")
-        
         logger.info("=" * 70)
         
-        return self.local_path, self.gcs_path
+        # Return path to summary file as primary return value
+        summary_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_summary.csv")
+        gcs_summary_path = f"gs://{Config.BUCKET_NAME}/results/{self.base_name}_summary.csv"
+        return summary_path, gcs_summary_path
 
 
 def create_image_result(video_name: str, frame_name: str, image_path: str, 

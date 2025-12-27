@@ -21,8 +21,5 @@ gitpython>=3.1.30
 google-cloud-logging>=3.0.0
 google-cloud-storage>=2.0.0
 
-# Excel support
-openpyxl>=3.0.0
-
 # Utilities
 tqdm>=4.65.0

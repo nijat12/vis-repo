@@ -129,8 +129,11 @@ class Config:
     # Enable Google Cloud Logging (for VM execution)
     ENABLE_CLOUD_LOGGING: bool = True
     
+    # Logging directory
+    LOG_DIR: str = "logs"
+    
     # Local log file
-    LOG_FILE: str = "run.log"
+    LOG_FILE: str = "main.log"
     
     @classmethod
     def validate(cls) -> None:

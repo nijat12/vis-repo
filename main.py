@@ -40,8 +40,9 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         Dictionary with pipeline results
     """
     try:
-        # Re-initialize logging (important for child processes in Pool)
-        vis_utils.setup_logging()
+        # Re-initialize logging with a unique file for this pipeline
+        log_filename = f"{pipeline_name}.log"
+        vis_utils.setup_logging(log_name=log_filename)
         
         logger.info(f"\n{'='*70}")
         logger.info(f"🚀 Starting pipeline: {pipeline_name.upper()}")
