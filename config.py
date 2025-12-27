@@ -144,7 +144,7 @@ class Config:
     # STRATEGY 10 CONFIG (Motion + YOLO)
     # ==========================================
     STRATEGY_10_CONFIG: Dict[str, Any] = {
-        "model_name": "yolo11n.pt",
+        "model_name": "yolo11s.pt",
         "conf_thresh": 0.1,          # Confidence for YOLO classification
         "motion_thresh_scale": 4.0,  # multiplier for motion threshold
         "bird_class_id": 14,
