@@ -1,8 +1,8 @@
 """
-Baseline Pipeline: YOLOv5 with 4x3 Tiled Inference
+Baseline Pipeline: YOLOv11s with 4x3 Tiled Inference
 
 This pipeline implements the baseline strategy using:
-- YOLOv5 pretrained model
+- YOLOv11s pretrained model (Upgraded from YOLOv5)
 - 4x3 grid tiling with overlap for better small object detection
 - Batch inference optimization
 - Center distance matching for evaluation
@@ -21,6 +21,13 @@ import cv2
 import torch
 import torchvision
 import pandas as pd
+import numpy as np
+
+# Attempt to import ultralytics
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
 
 from config import Config
 import vis_utils
@@ -30,16 +37,17 @@ from pipelines import register_pipeline
 logger = logging.getLogger(__name__)
 
 
-def get_tiled_predictions(model, img, img_size, device):
+def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
     """
-    Splits image into a 4x3 Grid (12 tiles) and runs inference.
+    Splits image into a 4x3 Grid (12 tiles) and runs inference using YOLOv11.
     Optimization: Sends all 12 tiles in ONE BATCH to maximize throughput.
     
     Args:
-        model: YOLOv5 model
+        model: YOLOv11 model (ultralytics)
         img: Input image (BGR format)
         img_size: Target size for inference
-        device: torch device (cpu/cuda)
+        conf_thresh: Confidence threshold
+        classes: List of class IDs to filter (e.g. [14])
     
     Returns:
         List of predictions in [x, y, w, h] format
@@ -79,35 +87,49 @@ def get_tiled_predictions(model, img, img_size, device):
         sub_crops = crops[i : i + CHUNK_SIZE]
         sub_offsets = offsets[i : i + CHUNK_SIZE]
 
-        results = model(sub_crops, size=img_size)
+        # YOLOv11 Inference
+        # verbose=False reduces log spam
+        results = model(sub_crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
 
-        for j, det in enumerate(results.xyxy):
-            if det is not None and len(det) > 0:
-                det = det.clone()
+        for j, res in enumerate(results):
+            # Ultralytics results object
+            boxes = res.boxes
+            if len(boxes) > 0:
+                # boxes.xyxy is (N, 4), boxes.conf is (N,)
+                # We need to move these to CPU numpy or tensor
+                local_boxes = boxes.xyxy.cpu()
+                local_scores = boxes.conf.cpu()
+
                 x_off, y_off = sub_offsets[j]
+                
                 # Shift crop coordinates back to full-frame
-                det[:, 0] += x_off
-                det[:, 1] += y_off
-                det[:, 2] += x_off
-                det[:, 3] += y_off
-                all_boxes.append(det[:, :4])
-                all_scores.append(det[:, 4])
+                # Clone to avoid modifying the original if cached
+                shifted_boxes = local_boxes.clone()
+                shifted_boxes[:, 0] += x_off
+                shifted_boxes[:, 1] += y_off
+                shifted_boxes[:, 2] += x_off
+                shifted_boxes[:, 3] += y_off
+                
+                all_boxes.append(shifted_boxes)
+                all_scores.append(local_scores)
 
     if not all_boxes:
         return []
 
-    # Merge and apply NMS
+    # Merge and apply Global NMS (Necessary because we stitched tiles)
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
+    
+    # We use a strict IoU threshold here to merge duplicates at tile boundaries
     keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
     final_tensor = pred_boxes[keep_indices]
 
-    # Convert to xywh format
+    # Convert to xywh format [x, y, w, h]
     final_preds = []
-    final_tensor = final_tensor.cpu().numpy()
+    final_tensor = final_tensor.numpy() # Convert to numpy for list building
     for box in final_tensor:
         x1, y1, x2, y2 = box
-        final_preds.append([x1, y1, x2-x1, y2-y1])
+        final_preds.append([float(x1), float(y1), float(x2-x1), float(y2-y1)])
 
     return final_preds
 
@@ -115,12 +137,9 @@ def get_tiled_predictions(model, img, img_size, device):
 @register_pipeline("baseline")
 def run_baseline_pipeline():
     """
-    Execute the baseline pipeline with YOLOv5 tiled inference.
-    
-    Returns:
-        Dict with execution metrics and results path
+    Execute the baseline pipeline with YOLOv11 tiled inference.
     """
-    logger.info("STARTING BASELINE PIPELINE (YOLOv5 + 4x3 Tiling)")
+    logger.info("STARTING BASELINE PIPELINE (YOLOv11s + 4x3 Tiling)")
     
     # Load configuration
     cfg = Config.BASELINE_CONFIG
@@ -130,21 +149,16 @@ def run_baseline_pipeline():
     IOU_THRESH = cfg["iou_thresh"]
     model_classes = cfg["model_classes"]
     
+    # Check dependencies
+    if YOLO is None:
+        logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
+        raise ImportError("ultralytics library missing")
+
     # Load model
     logger.info(f"⏳ Loading Model: {MODEL_NAME}...")
     try:
-        model = torch.hub.load('ultralytics/yolov5', MODEL_NAME, pretrained=True, force_reload=False, trust_repo=True)
-        model.conf = CONF_THRESH
-        model.classes = model_classes
-
-        if torch.cuda.is_available() and Config.IS_GPU_ALLOWED:
-            device = torch.device('cuda')
-            logger.info("✅ Model Loaded on GPU.")
-        else:
-            device = torch.device('cpu')
-            logger.info("⚠️  Model Loaded on CPU.")
-
-        model.to(device)
+        model = YOLO(MODEL_NAME)
+        logger.info(f"✅ Model {MODEL_NAME} Loaded.")
     except Exception as e:
         logger.error(f"❌ Model Load Error: {e}")
         raise
@@ -198,7 +212,8 @@ def run_baseline_pipeline():
             if img is None:
                 continue
 
-            preds = get_tiled_predictions(model, img, IMG_SIZE, device)
+            # Pass config args to helper
+            preds = get_tiled_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes)
 
             img_filename = os.path.basename(img_path)
             key = f"{video_name}/{img_filename}"
@@ -279,7 +294,7 @@ def run_baseline_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Baseline):")
+    logger.info("FINAL RESULTS (Baseline - YOLOv11s):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")

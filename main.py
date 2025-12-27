@@ -16,6 +16,22 @@ from typing import Dict, Any
 # Suppress Torch/YOLO internal deprecation warnings as early as possible
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.amp.autocast.*is deprecated.*")
 
+# ==========================================
+# SUPPRESS C++ LEVEL LOGGING (gRPC, ABSL)
+# ==========================================
+# 1. Suppress gRPC informational messages and warnings
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+os.environ["GRPC_TRACE"] = ""
+
+# 2. Suppress the specific "fork_posix.cc" warning
+# This tells gRPC not to attempt registering fork handlers, avoiding the thread conflict warning.
+# Safe to use if your child processes don't need to reuse the parent's gRPC connections.
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+# 3. Suppress Abseil (absl) and TensorFlow logs (if present)
+# '3' filters out INFO, WARNING, and ERROR logs (only FATAL remain)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

@@ -2,9 +2,9 @@
 VIS Pipeline Package
 
 Contains modular pipeline implementations:
-- baseline: YOLOv5 with 4x3 tiled inference
+- baseline: YOLO with 4x3 tiled inference
 - strategy_7: Motion compensation + CNN verifier
-- strategy_8: YOLOv5 on ROIs
+- strategy_8: YOLO on ROIs
 """
 
 from typing import Dict, Callable, Any, List

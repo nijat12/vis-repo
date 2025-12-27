@@ -1,9 +1,9 @@
 """
-Strategy 8 Pipeline: YOLOv5 on ROIs (Region of Interest)
+Strategy 8 Pipeline: YOLOv11s on ROIs (Region of Interest)
 
 Implements efficient detection using:
 - Motion compensation for proposal generation
-- YOLOv5 inference only on ROI crops
+- YOLOv11s inference only on ROI crops
 - Configurable detection frequency
 - Optional full-frame processing at intervals
 """
@@ -20,6 +20,12 @@ import torch
 import torchvision
 import numpy as np
 import pandas as pd
+
+# Attempt to import ultralytics
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
 
 from config import Config
 import vis_utils
@@ -43,8 +49,8 @@ def _expand_roi_xywh(box, w_img, h_img, scale=2.0, min_size=256):
     return x0, y0, x1, y1
 
 
-def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, device, roi_scale, min_roi, max_rois, fullframe_every, frame_idx):
-    """Run YOLOv5 only on ROI crops around proposals."""
+def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, classes, roi_scale, min_roi, max_rois, fullframe_every, frame_idx):
+    """Run YOLOv11 only on ROI crops around proposals."""
     if model is None:
         return []
 
@@ -70,31 +76,41 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, device, roi_sc
     if len(crops) == 0:
         return []
 
-    with torch.no_grad():
-        results = model(crops, size=img_size)
+    # Run Inference on List of Crops
+    # 
+    results = model(crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
 
     all_boxes = []
     all_scores = []
 
-    for j, det in enumerate(results.xyxy):
-        if det is None or len(det) == 0:
-            continue
-        det = det.clone()
-        x_off, y_off = offsets[j]
-        det[:, 0] += x_off
-        det[:, 1] += y_off
-        det[:, 2] += x_off
-        det[:, 3] += y_off
-        all_boxes.append(det[:, :4])
-        all_scores.append(det[:, 4])
+    for j, res in enumerate(results):
+        boxes = res.boxes
+        if len(boxes) > 0:
+            # Transfer to CPU
+            local_boxes = boxes.xyxy.cpu()
+            local_scores = boxes.conf.cpu()
+
+            x_off, y_off = offsets[j]
+            
+            # Apply offset to get back to full frame coordinates
+            shifted_boxes = local_boxes.clone()
+            shifted_boxes[:, 0] += x_off
+            shifted_boxes[:, 1] += y_off
+            shifted_boxes[:, 2] += x_off
+            shifted_boxes[:, 3] += y_off
+            
+            all_boxes.append(shifted_boxes)
+            all_scores.append(local_scores)
 
     if not all_boxes:
         return []
 
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
+    
+    # Standard NMS to merge overlapping ROI detections
     keep = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
-    final = pred_boxes[keep].cpu().numpy()
+    final = pred_boxes[keep].numpy()
 
     final_preds = []
     for x1, y1, x2, y2 in final:
@@ -105,29 +121,21 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, device, roi_sc
 
 @register_pipeline("strategy_8")
 def run_strategy_8_pipeline():
-    """Execute Strategy 8 pipeline with YOLOv5 on ROIs."""
-    logger.info("=" * 70)
-    logger.info("STARTING STRATEGY 8 PIPELINE (YOLOv5 on ROIs)")
-    logger.info("=" * 70)
+    """Execute Strategy 8 pipeline with YOLOv11s on ROIs."""
+    logger.info("STARTING STRATEGY 8 PIPELINE (YOLOv11s on ROIs)")
     
     cfg = Config.STRATEGY_8_CONFIG
+    
+    # Check dependencies
+    if YOLO is None:
+        logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
+        raise ImportError("ultralytics library missing")
     
     # Load model
     logger.info(f"⏳ Loading Model: {cfg['model_name']}...")
     try:
-        model = torch.hub.load('ultralytics/yolov5', cfg['model_name'], pretrained=True, force_reload=False, trust_repo=True)
-        model.conf = cfg['conf_thresh']
-        model.iou = cfg['iou_thresh']
-        model.classes = cfg['model_classes']
-
-        if torch.cuda.is_available() and Config.IS_GPU_ALLOWED:
-            device = torch.device('cuda')
-            logger.info("✅ Model Loaded on GPU.")
-        else:
-            device = torch.device('cpu')
-            logger.info("⚠️  Model Loaded on CPU.")
-
-        model.to(device)
+        model = YOLO(cfg['model_name'])
+        logger.info(f"✅ Model {cfg['model_name']} Loaded.")
     except Exception as e:
         logger.error(f"❌ Model Load Error: {e}")
         raise
@@ -206,10 +214,10 @@ def run_strategy_8_pipeline():
                                 x, y, w, h = cv2.boundingRect(cnt)
                                 proposals.append([x, y, w, h])
 
-                        # Run YOLOv5 on ROIs
+                        # Run YOLOv11 on ROIs
                         if len(proposals) > 0 or (cfg['fullframe_every'] and i % cfg['fullframe_every'] == 0):
                             raw_detections = get_roi_predictions(
-                                model, frame, proposals, cfg['img_size'], device,
+                                model, frame, proposals, cfg['img_size'], cfg['conf_thresh'], cfg['model_classes'],
                                 roi_scale=cfg['roi_scale'],
                                 min_roi=cfg['min_roi_size'],
                                 max_rois=cfg['max_rois'],
@@ -298,7 +306,7 @@ def run_strategy_8_pipeline():
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Strategy 8):")
+    logger.info("FINAL RESULTS (Strategy 8 - YOLOv11s):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")

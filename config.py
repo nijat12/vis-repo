@@ -21,9 +21,10 @@ class Config:
     # Enable/disable pipelines independently
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
-        "baseline",      # YOLOv5 with 4x3 tiled inference
+        "baseline",      # YOLOv11s with 4x3 tiled inference
         # "strategy_7",  # Motion compensation + CNN verifier
-        "strategy_8",  # YOLOv5 on ROIs
+        "strategy_8",  # YOLOv11s on ROIs
+        "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
     ]
     
     # ==========================================
@@ -66,7 +67,7 @@ class Config:
     # BASELINE PIPELINE CONFIG
     # ==========================================
     BASELINE_CONFIG: Dict[str, Any] = {
-        "model_name": "yolov5s6",
+        "model_name": "yolo11s.pt",
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -90,7 +91,7 @@ class Config:
     # STRATEGY 8 CONFIG
     # ==========================================
     STRATEGY_8_CONFIG: Dict[str, Any] = {
-        "model_name": "yolov5s6",
+        "model_name": "yolo11s.pt",
         "img_size": 1280,
         "conf_thresh": 0.01,
         "iou_thresh": 0.45,
@@ -99,8 +100,23 @@ class Config:
         "min_roi_size": 192,
         "max_rois": 3,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 3,  # Run YOLOv5 every N frames
+        "detect_every": 3,  # Run YOLOv11s every N frames
         "output_csv": "strat_8_cpu.csv",
+    }
+    
+    # ==========================================
+    # STRATEGY 9 CONFIG (SAHI + YOLOv11 + Kalman)
+    # ==========================================
+    STRATEGY_9_CONFIG: Dict[str, Any] = {
+        "model_path": "yolo11n.pt",  # Using YOLOv11 Nano
+        "conf_thresh": 0.2,          # Confidence threshold (from diagram)
+        "slice_size": 640,           # Slice dimensions (from diagram)
+        "overlap": 0.2,              # Overlap ratio (from diagram)
+        "bird_class_id": 14,         # YOLO Bird class ID
+        "tracker_dist_thresh": 50,   # Pixel distance for DotD association
+        "max_age": 15,               # Max frames to keep lost tracks
+        "min_hits": 2,               # Min hits to confirm track
+        "output_csv": "strat_9_cpu.csv",
     }
     
     # ==========================================
@@ -141,11 +157,6 @@ class Config:
         if not cls.ENABLED_PIPELINES:
             raise ValueError("At least one pipeline must be enabled in ENABLED_PIPELINES")
         
-        valid_pipelines = {"baseline", "strategy_7", "strategy_8"}
-        for pipeline in cls.ENABLED_PIPELINES:
-            if pipeline not in valid_pipelines:
-                raise ValueError(f"Invalid pipeline: {pipeline}. Must be one of {valid_pipelines}")
-        
         if cls.SHOULD_LIMIT_VIDEO == 1 and not cls.VIDEO_INDEXES:
             raise ValueError("VIDEO_INDEXES must be specified when SHOULD_LIMIT_VIDEO == 1")
         
@@ -168,6 +179,8 @@ class Config:
             filename = cls.STRATEGY_7_CONFIG["output_csv"]
         elif pipeline_name == "strategy_8":
             filename = cls.STRATEGY_8_CONFIG["output_csv"]
+        elif pipeline_name == "strategy_9":
+            filename = cls.STRATEGY_9_CONFIG["output_csv"]
         else:
             filename = f"{pipeline_name}_output.csv"
         
