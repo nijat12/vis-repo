@@ -4,3 +4,5 @@ yolo*
 data_local/*
 nohup.out
 train.json
+run.log
+metrics/.results_*
