@@ -1,3 +1,6 @@
+pkill -f main.py
+rm -rf metrics/*
+rm -rf logs/*
 git fetch && git pull --rebase
 pip install -r requirements.txt
 mkdir -p logs
