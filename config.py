@@ -23,7 +23,7 @@ class Config:
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
         # "baseline",      # YOLOv11s with 4x3 tiled inference
-        "strategy_2",    # GMC + Dynamic Thresholding + YOLOv11s Refiner
+        # "strategy_2",    # GMC + Dynamic Thresholding + YOLOv11s Refiner
         # "strategy_7",  # Motion compensation + CNN verifier
         # "strategy_8",  # YOLOv11s on ROIs
         # "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
@@ -129,7 +129,7 @@ class Config:
     # STRATEGY 9 CONFIG (SAHI + YOLOv11 + Kalman)
     # ==========================================
     STRATEGY_9_CONFIG: Dict[str, Any] = {
-        "model_path": "yolo11n.pt",  # Using YOLOv11 Nano
+        "model_path": "yolo11s.pt",  # Using YOLOv11
         "conf_thresh": 0.2,          # Confidence threshold (from diagram)
         "slice_size": 640,           # Slice dimensions (from diagram)
         "overlap": 0.2,              # Overlap ratio (from diagram)
