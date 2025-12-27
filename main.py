@@ -9,8 +9,12 @@ import os
 import sys
 import time
 import logging
+import warnings
 from multiprocessing import Pool
 from typing import Dict, Any
+
+# Suppress Torch/YOLO internal deprecation warnings as early as possible
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.amp.autocast.*is deprecated.*")
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +40,9 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         Dictionary with pipeline results
     """
     try:
+        # Re-initialize logging (important for child processes in Pool)
+        vis_utils.setup_logging()
+        
         logger.info(f"\n{'='*70}")
         logger.info(f"🚀 Starting pipeline: {pipeline_name.upper()}")
         logger.info(f"{'='*70}\n")

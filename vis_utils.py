@@ -16,9 +16,14 @@ import logging
 import subprocess
 import zipfile
 import shutil
+import warnings
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import cv2
+
+# Suppress Torch/YOLO internal deprecation warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch.cuda.amp.autocast")
+warnings.filterwarnings("ignore", message=".*torch.cuda.amp.autocast.*is deprecated.*")
 
 from config import Config
 
@@ -28,7 +33,17 @@ logger = logging.getLogger(__name__)
 def setup_logging():
     """Configure logging with file and console handlers, plus optional Cloud Logging."""
     logger = logging.getLogger()
+    
+    # Avoid duplicate handlers if already configured
+    if logger.handlers:
+        return logger
+        
     logger.setLevel(getattr(logging, Config.LOG_LEVEL))
+    
+    # Set GOOGLE_APPLICATION_CREDENTIALS if key file exists
+    # Do this early so any subsequent library imports/initializations see it
+    if Config.SERVICE_ACCOUNT_KEY and os.path.exists(Config.SERVICE_ACCOUNT_KEY):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath(Config.SERVICE_ACCOUNT_KEY)
     
     # Console handler
     console_handler = logging.StreamHandler()
@@ -86,12 +101,13 @@ def authenticate_gcs(key_file: Optional[str] = None) -> bool:
     try:
         from google.cloud import storage
         
-        # Create storage client
+        # Ensure environment variable is set
         if key_file and os.path.exists(key_file):
-            client = storage.Client.from_service_account_json(key_file)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath(key_file)
             logger.info(f"✅ Using service account key: {key_file}")
-        else:
-            client = storage.Client()
+        
+        client = storage.Client()
+        if not (key_file and os.path.exists(key_file)):
             logger.info("✅ Using VM default credentials")
         
         # Test access by listing bucket

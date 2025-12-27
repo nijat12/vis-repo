@@ -115,7 +115,7 @@ def run_strategy_8_pipeline():
     # Load model
     logger.info(f"⏳ Loading Model: {cfg['model_name']}...")
     try:
-        model = torch.hub.load('ultralytics/yolov5', cfg['model_name'], pretrained=True, force_reload=False)
+        model = torch.hub.load('ultralytics/yolov5', cfg['model_name'], pretrained=True, force_reload=False, trust_repo=True)
         model.conf = cfg['conf_thresh']
         model.iou = cfg['iou_thresh']
         model.classes = cfg['model_classes']
@@ -171,7 +171,7 @@ def run_strategy_8_pipeline():
         vid_start = time.time()
         n_frames = len(images)
         prev_gray = None
-        tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=4, min_hits=2)
+        obj_tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=4, min_hits=2)
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()  # Track per-image time
@@ -224,7 +224,7 @@ def run_strategy_8_pipeline():
             prev_gray = curr_gray
 
             # Tracking
-            final_preds = tracker.update(raw_detections)
+            final_preds = obj_tracker.update(raw_detections)
 
             # Evaluation
             key = f"{video_name}/{os.path.basename(img_path)}"

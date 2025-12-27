@@ -135,7 +135,7 @@ def run_baseline_pipeline():
     # Load model
     logger.info(f"⏳ Loading Model: {MODEL_NAME}...")
     try:
-        model = torch.hub.load('ultralytics/yolov5', MODEL_NAME, pretrained=True, force_reload=False)
+        model = torch.hub.load('ultralytics/yolov5', MODEL_NAME, pretrained=True, force_reload=False, trust_repo=True)
         model.conf = CONF_THRESH
         model.classes = model_classes
 
