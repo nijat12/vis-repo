@@ -168,20 +168,20 @@ def check_and_download_data():
                          if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
     
     if json_exists and dir_exists and num_videos > 0:
-        logger.info(f"   ✅ Training data validated: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
+        logger.info(f"✅ Training data validated: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
         return
     
     # Log reason for download
     if not json_exists:
-        logger.info(f"   Missing annotations: {Config.LOCAL_JSON_PATH}")
+        logger.info(f"Missing annotations: {Config.LOCAL_JSON_PATH}")
     if not dir_exists:
-        logger.info(f"   Missing data directory: {Config.LOCAL_TRAIN_DIR}")
+        logger.info(f"Missing data directory: {Config.LOCAL_TRAIN_DIR}")
     elif num_videos == 0:
-        logger.info(f"   Data directory is empty: {Config.LOCAL_TRAIN_DIR}")
+        logger.info(f"Data directory is empty: {Config.LOCAL_TRAIN_DIR}")
     
-    logger.info("   🚀 Triggering download from GCS...")
+    logger.info("🚀 Triggering download from GCS...")
     
-    logger.info("   Downloading data from GCS...")
+    logger.info("Downloading data from GCS...")
     os.makedirs(Config.LOCAL_BASE_DIR, exist_ok=True)
     
     try:
@@ -191,13 +191,13 @@ def check_and_download_data():
         bucket = client.bucket(Config.BUCKET_NAME)
         
         # 1. Download annotation JSON
-        logger.info(f"   Downloading annotations...")
+        logger.info("Downloading annotations...")
         blob_json = bucket.blob(Config.GCS_JSON_URL)
         blob_json.download_to_filename(Config.LOCAL_JSON_PATH)
-        logger.info("   ✅ Annotations downloaded")
+        logger.info("✅ Annotations downloaded")
         
         # 2. Download training ZIP
-        logger.info(f"   Downloading training ZIP: {Config.GCS_TRAIN_ZIP}")
+        logger.info(f"Downloading training ZIP: {Config.GCS_TRAIN_ZIP}")
         blob_zip = bucket.blob(Config.GCS_TRAIN_ZIP)
         
         # Check if zip exists in GCS
@@ -205,30 +205,30 @@ def check_and_download_data():
             raise RuntimeError(f"Zip file '{Config.GCS_TRAIN_ZIP}' not found in bucket '{Config.BUCKET_NAME}'")
             
         blob_zip.download_to_filename(Config.LOCAL_ZIP_PATH)
-        logger.info("   ✅ Zip file downloaded")
+        logger.info("✅ Zip file downloaded")
         
         # 3. Extract training ZIP
-        logger.info(f"   Extracting {Config.LOCAL_ZIP_PATH}...")
+        logger.info(f"Extracting {Config.LOCAL_ZIP_PATH}...")
         with zipfile.ZipFile(Config.LOCAL_ZIP_PATH, 'r') as zip_ref:
             zip_ref.extractall(Config.LOCAL_BASE_DIR)
-        logger.info("   ✅ Extraction complete")
+        logger.info("✅ Extraction complete")
         
         # 4. Clean up zip file to save space
         if os.path.exists(Config.LOCAL_ZIP_PATH):
             os.remove(Config.LOCAL_ZIP_PATH)
-            logger.info("   🧹 Cleaned up zip file")
+            logger.info("🧹 Cleaned up zip file")
             
         # Verify download
         dir_exists_now = os.path.exists(Config.LOCAL_TRAIN_DIR)
         if dir_exists_now:
             num_videos = len([d for d in os.listdir(Config.LOCAL_TRAIN_DIR) 
                              if os.path.isdir(os.path.join(Config.LOCAL_TRAIN_DIR, d))])
-            logger.info(f"   ✅ Training data ready: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
+            logger.info(f"✅ Training data ready: {num_videos} videos found in {Config.LOCAL_TRAIN_DIR}")
         else:
-            logger.error(f"   ❌ Error: Expected data directory {Config.LOCAL_TRAIN_DIR} not found after extraction.")
+            logger.error(f"❌ Error: Expected data directory {Config.LOCAL_TRAIN_DIR} not found after extraction.")
             # List what was actually extracted to help debug zip structure
             actual_contents = os.listdir(Config.LOCAL_BASE_DIR)
-            logger.error(f"   Contents of {Config.LOCAL_BASE_DIR}: {actual_contents[:10]}...")
+            logger.error(f"Contents of {Config.LOCAL_BASE_DIR}: {actual_contents[:10]}...")
             raise RuntimeError(f"Zip extraction did not create expected directory: {Config.LOCAL_TRAIN_DIR}")
             
     except Exception as e:
@@ -252,7 +252,7 @@ def load_json_ground_truth(json_path: str) -> Dict:
             data = json.load(f)
         
         num_images = len(data)
-        logger.info(f"   ✅ Loaded {num_images} annotated images")
+        logger.info(f"✅ Loaded {num_images} annotated images")
         return data
         
     except Exception as e:
