@@ -178,7 +178,6 @@ def run_strategy_8_pipeline():
             if i % 50 == 0:
                 percent = ((i + 1) / n_frames) * 100
                 sys.stdout.write(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
-                sys.stdout.flush()
 
             frame = cv2.imread(img_path)
             if frame is None:

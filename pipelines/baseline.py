@@ -195,7 +195,6 @@ def run_baseline_pipeline():
             if i % 20 == 0:
                 percent = ((i + 1) / n_frames) * 100
                 sys.stdout.write(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
-                sys.stdout.flush()
 
             img = cv2.imread(img_path)
             if img is None:
