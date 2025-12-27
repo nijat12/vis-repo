@@ -266,7 +266,7 @@ def run_baseline_pipeline():
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
-        logger.info("\r" + " " * 80 + "\r")
+
         logger.info(f"{video_name:<10} | {n_frames:<6} | {vid_fps:<6.1f} | {prec:<6.2f} | {rec:<6.2f} | {f1:<6.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
 
         results_data.append({
