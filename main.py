@@ -44,9 +44,9 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         log_filename = f"{pipeline_name}.log"
         vis_utils.setup_logging(log_name=log_filename)
         
-        logger.info(f"\n{'='*70}")
+        logger.info(f"{'='*70}")
         logger.info(f"🚀 Starting pipeline: {pipeline_name.upper()}")
-        logger.info(f"{'='*70}\n")
+        logger.info(f"{'='*70}")
         
         start_time = time.time()
         
@@ -57,10 +57,10 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         execution_time = time.time() - start_time
         results['execution_time_sec'] = execution_time
         
-        logger.info(f"\n{'='*70}")
+        logger.info(f"{'='*70}")
         logger.info(f"✅ Pipeline {pipeline_name.upper()} COMPLETED")
         logger.info(f"   Execution time: {execution_time:.2f} seconds")
-        logger.info(f"{'='*70}\n")
+        logger.info(f"{'='*70}")
         
         return results
         
@@ -125,7 +125,7 @@ def main():
         logger.info(f"\n⚙️  Parallel execution: {num_workers} workers for {len(Config.ENABLED_PIPELINES)} pipelines")
         
         # Execute pipelines in parallel
-        logger.info("\n" + "="*70)
+        logger.info("="*70)
         logger.info("EXECUTING PIPELINES")
         logger.info("="*70)
         
@@ -142,7 +142,7 @@ def main():
         overall_time = time.time() - overall_start
         
         # Log results summary
-        logger.info("\n" + "="*70)
+        logger.info("="*70)
         logger.info("PIPELINE EXECUTION SUMMARY")
         logger.info("="*70)
         logger.info(f"Total execution time: {overall_time:.2f} seconds")
@@ -159,7 +159,7 @@ def main():
                 logger.info(f"  ✅ {pipeline}: {exec_time:.2f}s")
         
         # Finalize and upload consolidated results
-        logger.info("\n📊 Finalizing results...")
+        logger.info("📊 Finalizing results...")
         tracker = csv_utils.get_results_tracker()
         local_path, gcs_path = tracker.finalize()
         
@@ -172,18 +172,18 @@ def main():
         
         # Trigger killswitch if enabled
         if Config.ENABLE_KILLSWITCH:
-            logger.info(f"\n🔴 Killswitch enabled - VM will shutdown in {Config.KILLSWITCH_DELAY_SECONDS} seconds")
+            logger.info(f"🔴 Killswitch enabled - VM will shutdown in {Config.KILLSWITCH_DELAY_SECONDS} seconds")
             import vm_utils
             vm_utils.trigger_killswitch(delay_seconds=Config.KILLSWITCH_DELAY_SECONDS)
         else:
-            logger.info("\n💡 Killswitch disabled - VM will remain running")
+            logger.info("💡 Killswitch disabled - VM will remain running")
             logger.info("   Remember to stop the VM manually to avoid charges!")
         
     except KeyboardInterrupt:
-        logger.warning("\n⚠️  Execution interrupted by user")
+        logger.warning("⚠️  Execution interrupted by user")
         sys.exit(130)
     except Exception as e:
-        logger.critical(f"\n❌ CRITICAL ERROR: {e}", exc_info=True)
+        logger.critical(f"❌ CRITICAL ERROR: {e}", exc_info=True)
         
         if Config.ENABLE_KILLSWITCH:
             logger.info("🔴 Triggering killswitch due to critical error...")
