@@ -108,7 +108,7 @@ def main():
             logger.critical("   Cannot proceed without GCS access. Aborting.")
             
             # Trigger killswitch if enabled (to save resources)
-            if Config.ENABLE_KILLSWITCH:
+            if Config.get_runtime_killswitch():
                 logger.info("🔴 Triggering killswitch due to authentication failure...")
                 import vm_utils
                 vm_utils.shutdown_vm(delay_seconds=10)
@@ -123,7 +123,7 @@ def main():
         except Exception as e:
             logger.critical(f"❌ Data download FAILED: {e}")
             
-            if Config.ENABLE_KILLSWITCH:
+            if Config.get_runtime_killswitch():
                 logger.info("🔴 Triggering killswitch due to data download failure...")
                 import vm_utils
                 vm_utils.shutdown_vm(delay_seconds=10)
@@ -174,10 +174,10 @@ def main():
         logger.info(f"GCS: {gcs_path}")
         
         # Trigger killswitch if enabled
-        if Config.ENABLE_KILLSWITCH:
+        if Config.get_runtime_killswitch():
             logger.info(f"🔴 Killswitch enabled - VM will shutdown in {Config.KILLSWITCH_DELAY_SECONDS} seconds")
             import vm_utils
-            vm_utils.trigger_killswitch(delay_seconds=Config.KILLSWITCH_DELAY_SECONDS)
+            vm_utils.shutdown_vm(delay_seconds=Config.KILLSWITCH_DELAY_SECONDS)
         else:
             logger.info("💡 Killswitch disabled - VM will remain running")
             logger.info("   Remember to stop the VM manually to avoid charges!")
@@ -188,10 +188,10 @@ def main():
     except Exception as e:
         logger.critical(f"❌ CRITICAL ERROR: {e}", exc_info=True)
         
-        if Config.ENABLE_KILLSWITCH:
+        if Config.get_runtime_killswitch():
             logger.info("🔴 Triggering killswitch due to critical error...")
             import vm_utils
-            vm_utils.trigger_killswitch(delay_seconds=10)
+            vm_utils.shutdown_vm(delay_seconds=10)
         
         sys.exit(1)
 

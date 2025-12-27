@@ -9,6 +9,7 @@ This module provides centralized configuration for:
 """
 
 import os
+import json
 from typing import List, Dict, Any
 
 
@@ -168,6 +169,23 @@ class Config:
             print(f"⚠️  Warning: Service account key not found at {cls.SERVICE_ACCOUNT_KEY}")
             print("    Will attempt to use VM default credentials")
     
+    @classmethod
+    def get_runtime_killswitch(cls) -> bool:
+        """
+        Check if killswitch is enabled, checking runtime_config.json first.
+        Allows enabling/disabling at runtime without restarting the process.
+        """
+        runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
+        if os.path.exists(runtime_config_path):
+            try:
+                with open(runtime_config_path, 'r') as f:
+                    data = json.load(f)
+                    return data.get("ENABLE_KILLSWITCH", cls.ENABLE_KILLSWITCH)
+            except Exception as e:
+                print(f"⚠️  Error reading runtime_config.json: {e}")
+        
+        return cls.ENABLE_KILLSWITCH
+
     @classmethod
     def get_output_path(cls, pipeline_name: str) -> str:
         """Get the full output path for a pipeline's CSV file."""
