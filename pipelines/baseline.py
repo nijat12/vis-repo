@@ -120,9 +120,7 @@ def run_baseline_pipeline():
     Returns:
         Dict with execution metrics and results path
     """
-    logger.info("=" * 70)
     logger.info("STARTING BASELINE PIPELINE (YOLOv5n + 4x3 Tiling)")
-    logger.info("=" * 70)
     
     # Load configuration
     cfg = Config.BASELINE_CONFIG
@@ -179,7 +177,7 @@ def run_baseline_pipeline():
     total_tp = total_fp = total_fn = total_time_sec = total_frames = 0
     results_data = []
 
-    logger.info(f"\n{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
+    logger.info(f"{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
     logger.info("-" * 65)
 
     for v_idx, video_path in enumerate(video_folders):

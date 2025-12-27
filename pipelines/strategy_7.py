@@ -147,7 +147,7 @@ def run_strategy_7_pipeline():
     total_tp = total_fp = total_fn = total_time = total_frames = 0
     results_data = []
 
-    logger.info(f"\n{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
+    logger.info(f"{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
     logger.info("-" * 65)
 
     for video_path in video_folders:

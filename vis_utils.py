@@ -135,20 +135,17 @@ def authenticate_gcs(key_file: Optional[str] = None) -> bool:
     except Exception as e:
         error_msg = str(e)
         logger.error(f"❌ GCS bucket access FAILED: {error_msg}")
-        logger.error("\n" + "=" * 70)
         logger.error("CRITICAL: Cannot access GCS bucket!")
-        logger.error("=" * 70)
         logger.error(f"Bucket: {Config.BUCKET_NAME}")
         logger.error("Required IAM role: Storage Object Admin (or Storage Object Viewer)")
-        logger.error("\nPossible causes:")
+        logger.error("Possible causes:")
         logger.error("1. VM service account lacks required permissions")
         logger.error("2. Bucket name is incorrect")
         logger.error("3. Bucket does not exist")
-        logger.error("\nTo fix:")
+        logger.error("To fix:")
         logger.error("  gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \\")
         logger.error("    --member='serviceAccount:YOUR_VM_SERVICE_ACCOUNT' \\")
         logger.error("    --role='roles/storage.objectAdmin'")
-        logger.error("=" * 70)
         
         raise RuntimeError(f"GCS authentication failed: {error_msg}")
 

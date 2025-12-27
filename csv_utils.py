@@ -165,23 +165,19 @@ class ResultsTracker:
         self.upload_to_gcs()
         
         # Generate summary report
-        logger.info("\n" + "=" * 70)
         logger.info("RESULTS SUMMARY")
-        logger.info("=" * 70)
         logger.info(f"Files saved to: {Config.OUTPUT_DIR}")
         logger.info(f"Total files: {len(self.saved_files)}")
         
         if self.summary_data:
-            logger.info("\nPipeline Metrics:")
+            logger.info("Pipeline Metrics:")
             for pipeline_name, metrics in self.summary_data.items():
-                logger.info(f"\n{pipeline_name.upper()}:")
+                logger.info(f"{pipeline_name.upper()}:")
                 for key, value in metrics.items():
                     if isinstance(value, float):
                         logger.info(f"  {key}: {value:.4f}")
                     else:
                         logger.info(f"  {key}: {value}")
-        
-        logger.info("=" * 70)
         
         # Return path to summary file as primary return value
         summary_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_summary.csv")

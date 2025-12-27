@@ -137,20 +137,20 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     print("Testing VM utilities...")
-    print("\n1. Getting VM metadata:")
+    print("1. Getting VM metadata:")
     metadata = get_vm_metadata()
     if metadata:
         print(f"   VM Name: {metadata.get('name')}")
         print(f"   Zone: {metadata.get('zone', '').split('/')[-1]}")
     
-    print("\n2. Testing shutdown permissions:")
+    print("2. Testing shutdown permissions:")
     test_shutdown_permissions()
     
-    print("\n3. Killswitch test (dry run - will not actually shutdown):")
+    print("3. Killswitch test (dry run - will not actually shutdown):")
     print("   To test actual shutdown, run: python vm_utils.py --test-shutdown")
     
     if "--test-shutdown" in sys.argv:
-        print("\n⚠️  WARNING: This will shutdown the VM in 10 seconds!")
+        print("⚠️  WARNING: This will shutdown the VM in 10 seconds!")
         response = input("Type 'yes' to continue: ")
         if response.lower() == "yes":
             shutdown_vm(delay_seconds=10, force=True)

@@ -83,7 +83,7 @@ def main():
         logger.info(f"✅ Configuration valid. Enabled pipelines: {Config.ENABLED_PIPELINES}")
         
         # Authenticate with GCS
-        logger.info("\n🔐 Authenticating with Google Cloud Storage...")
+        logger.info("🔐 Authenticating with Google Cloud Storage...")
         try:
             vis_utils.authenticate_gcs(key_file=Config.SERVICE_ACCOUNT_KEY)
             logger.info("✅ GCS authentication successful")
@@ -100,7 +100,7 @@ def main():
             sys.exit(1)
         
         # Download training data from GCS
-        logger.info("\n📥 Checking/downloading training data...")
+        logger.info("📥 Checking/downloading training data...")
         try:
             vis_utils.check_and_download_data()
             logger.info("✅ Training data ready")
