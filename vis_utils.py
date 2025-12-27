@@ -66,14 +66,7 @@ def setup_logging(log_name: Optional[str] = None):
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
     
-    # File handler
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
-        '%(name)20s - %(message)s'
-    )
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
+
     
     # Google Cloud Logging (if enabled and available)
     if Config.ENABLE_CLOUD_LOGGING:

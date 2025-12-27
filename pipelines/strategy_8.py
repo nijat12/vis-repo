@@ -158,8 +158,6 @@ def run_strategy_8_pipeline():
     total_tp = total_fp = total_fn = total_time = total_frames = 0
     results_data = []
 
-    logger.info(f"{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
-
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
         images = sorted(glob.glob(os.path.join(video_path, '*.jpg')))
@@ -280,7 +278,8 @@ def run_strategy_8_pipeline():
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
 
-        logger.info(f"{video_name:<10} | {len(images):<6} | {fps:<6.1f} | {prec:<6.2f} | {rec:<6.2f} | {f1:<6.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
+        logger.info(f"{'Video':<8} | {'Fr':<4} | {'FPS':<5} | {'P':<4} | {'R':<4} | {'F1':<4} | {'Time'}")
+        logger.info(f"{video_name:<8} | {len(images):<4} | {fps:<5.1f} | {prec:<4.2f} | {rec:<4.2f} | {f1:<4.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
 
         results_data.append({
             'Video': video_name, 'Frames': len(images), 'FPS': round(fps, 2),
