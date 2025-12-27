@@ -44,9 +44,7 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         log_filename = f"{pipeline_name}.log"
         vis_utils.setup_logging(log_name=log_filename)
         
-        logger.info(f"{'='*70}")
         logger.info(f"🚀 Starting pipeline: {pipeline_name.upper()}")
-        logger.info(f"{'='*70}")
         
         start_time = time.time()
         
@@ -57,10 +55,8 @@ def run_single_pipeline(pipeline_name: str) -> Dict[str, Any]:
         execution_time = time.time() - start_time
         results['execution_time_sec'] = execution_time
         
-        logger.info(f"{'='*70}")
         logger.info(f"✅ Pipeline {pipeline_name.upper()} COMPLETED")
         logger.info(f"   Execution time: {execution_time:.2f} seconds")
-        logger.info(f"{'='*70}")
         
         return results
         
@@ -79,9 +75,7 @@ def main():
     try:
         # Setup logging
         vis_utils.setup_logging()
-        logger.info("="*70)
         logger.info("VIS PIPELINE - STARTING")
-        logger.info("="*70)
         
         # Validate configuration
         logger.info("📋 Validating configuration...")
@@ -122,12 +116,10 @@ def main():
         
         # Determine number of workers
         num_workers = min(Config.MAX_WORKERS, len(Config.ENABLED_PIPELINES))
-        logger.info(f"\n⚙️  Parallel execution: {num_workers} workers for {len(Config.ENABLED_PIPELINES)} pipelines")
+        logger.info(f"⚙️  Parallel execution: {num_workers} workers for {len(Config.ENABLED_PIPELINES)} pipelines")
         
         # Execute pipelines in parallel
-        logger.info("="*70)
         logger.info("EXECUTING PIPELINES")
-        logger.info("="*70)
         
         overall_start = time.time()
         
@@ -142,9 +134,7 @@ def main():
         overall_time = time.time() - overall_start
         
         # Log results summary
-        logger.info("="*70)
         logger.info("PIPELINE EXECUTION SUMMARY")
-        logger.info("="*70)
         logger.info(f"Total execution time: {overall_time:.2f} seconds")
         logger.info(f"Pipelines completed: {len(results)}")
         
@@ -163,12 +153,9 @@ def main():
         tracker = csv_utils.get_results_tracker()
         local_path, gcs_path = tracker.finalize()
         
-        logger.info("="*70)
         logger.info("✅ ALL PIPELINES COMPLETED SUCCESSFULLY")
-        logger.info("="*70)
         logger.info(f"Results: {local_path}")
         logger.info(f"GCS: {gcs_path}")
-        logger.info("="*70)
         
         # Trigger killswitch if enabled
         if Config.ENABLE_KILLSWITCH:
