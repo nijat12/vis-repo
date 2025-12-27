@@ -22,10 +22,11 @@ class Config:
     # Enable/disable pipelines independently
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
-        "baseline",      # YOLOv11s with 4x3 tiled inference
+        # "baseline",      # YOLOv11s with 4x3 tiled inference
+        "strategy_2",    # GMC + Dynamic Thresholding + YOLOv11s Refiner
         # "strategy_7",  # Motion compensation + CNN verifier
-        "strategy_8",  # YOLOv11s on ROIs
-        "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
+        # "strategy_8",  # YOLOv11s on ROIs
+        # "strategy_9",  # SAHI Slicing + YOLOv8 + Kalman/Hungarian (DotD)
     ]
     
     # ==========================================
@@ -74,6 +75,24 @@ class Config:
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
         "output_csv": "baseline_tiled_cpu.csv",
+    }
+    
+    # ==========================================
+    # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLOv11s)
+    # ==========================================
+    STRATEGY_2_CONFIG: Dict[str, Any] = {
+        "model_name": "yolo11s.pt",
+        "img_size": 1280,
+        "conf_thresh": 0.01,
+        "model_classes": [14],
+        "roi_scale": 3.0,
+        "min_roi_size": 192,
+        "max_rois": 5,
+        "dynamic_multiplier": 4.0,  # Multiplier for StdDev in thresholding
+        "min_threshold": 20,       # Min clamp for dynamic threshold
+        "max_threshold": 80,       # Max clamp for dynamic threshold
+        "min_hits": 3,             # For persistence tracking
+        "output_csv": "strat_2_cpu.csv",
     }
     
     # ==========================================
@@ -193,6 +212,8 @@ class Config:
         
         if pipeline_name == "baseline":
             filename = cls.BASELINE_CONFIG["output_csv"]
+        elif pipeline_name == "strategy_2":
+            filename = cls.STRATEGY_2_CONFIG["output_csv"]
         elif pipeline_name == "strategy_7":
             filename = cls.STRATEGY_7_CONFIG["output_csv"]
         elif pipeline_name == "strategy_8":
