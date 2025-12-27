@@ -159,7 +159,6 @@ def run_strategy_8_pipeline():
     results_data = []
 
     logger.info(f"{'Video':<10} | {'Frames':<6} | {'FPS':<6} | {'Prec':<6} | {'Recall':<6} | {'F1':<6} | {'Time':<6}")
-    logger.info("-" * 65)
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
@@ -178,7 +177,7 @@ def run_strategy_8_pipeline():
             
             if i % 50 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                sys.stdout.write(f"\r👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                sys.stdout.write(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
                 sys.stdout.flush()
 
             frame = cv2.imread(img_path)
