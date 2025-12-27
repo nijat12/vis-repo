@@ -22,7 +22,7 @@ class Config:
     # Set to True to run, False to skip
     ENABLED_PIPELINES: List[str] = [
         "baseline",      # YOLOv5n with 4x3 tiled inference
-        "strategy_7",  # Motion compensation + CNN verifier
+        # "strategy_7",  # Motion compensation + CNN verifier
         "strategy_8",  # YOLO on ROIs
     ]
     
