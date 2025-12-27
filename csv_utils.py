@@ -131,7 +131,14 @@ class ResultsTracker:
         success = True
         try:
             from google.cloud import storage
-            client = storage.Client()
+            
+            # Use service account key if it exists, otherwise use default credentials
+            if Config.SERVICE_ACCOUNT_KEY and os.path.exists(Config.SERVICE_ACCOUNT_KEY):
+                logger.info(f"Using service account key: {Config.SERVICE_ACCOUNT_KEY}")
+                client = storage.Client.from_service_account_json(Config.SERVICE_ACCOUNT_KEY)
+            else:
+                client = storage.Client()
+                
             bucket = client.bucket(Config.BUCKET_NAME)
             
             for local_path in self.saved_files:
