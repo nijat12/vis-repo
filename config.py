@@ -80,7 +80,7 @@ class Config:
     # Output directory for results
     OUTPUT_DIR: str = "./metrics"
     
-    UNIFIED_MODEL_NAME: str = "yolo12l.pt"
+    UNIFIED_MODEL_NAME: str = "yolo12n.pt"
     
     # ==========================================
     # BASELINE PIPELINE CONFIG
@@ -88,7 +88,7 @@ class Config:
     BASELINE_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
+        "conf_thresh": 0.1,
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
         "output_csv": "baseline_tiled_cpu.csv",
@@ -130,14 +130,14 @@ class Config:
     STRATEGY_8_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
+        "conf_thresh": 0.1,
         "iou_thresh": 0.45,
         "model_classes": [14],
         "roi_scale": 3.0,
-        "min_roi_size": 192,
-        "max_rois": 3,
+        "min_roi_size": 10,
+        "max_rois": 50,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 3,  # Run YOLO every N frames
+        "detect_every": 15,  # Run YOLO every N frames
         "output_csv": "strat_8_cpu.csv",
     }
     
