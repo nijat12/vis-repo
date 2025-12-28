@@ -455,7 +455,7 @@ def log_video_metrics(logger: logging.Logger, video_name: str, metrics: Dict[str
     """
     Logs metrics for a single video in a column-based list.
     """
-    logger.info("\n" + "-" * 40)
+    logger.info("-" * 40)
     logger.info(f"📊 VIDEO RESULTS: {video_name}")
     logger.info("-" * 40)
     
@@ -505,7 +505,7 @@ def log_pipeline_summary(logger: logging.Logger, pipeline_name: str, metrics: Di
         pipeline_name: Name of the pipeline
         metrics: Dictionary containing pipeline summary metrics
     """
-    logger.info("\n" + "=" * 50)
+    logger.info("=" * 50)
     logger.info(f"🚀 FINAL SUMMARY: {pipeline_name.upper()}")
     logger.info("=" * 50)
     
