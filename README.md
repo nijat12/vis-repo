@@ -61,15 +61,18 @@ The following table summarizes the performance on **Video 0002** (Standard Fligh
 ---
 
 ## 4. Strategy 8: YOLO on ROIs (`strategy_8.py`)
-**Type:** Two-Stage Detector (Proposal based)  
-**Goal:** Maximize efficiency by only running YOLO on "interesting" parts of the image.
+**Type:** Two-Stage Detector (Motion-Guided Proposal Based)  
+**Goal:** Maximize efficiency by only running YOLO on "potentially interesting" parts of the image, significantly reducing computational overhead in 4K video.
 
 ### Algorithm Logic
-1.  **Motion Proposals:** Uses GMC and Frame Differencing to generate candidate bounding boxes.
-2.  **ROI Expansion:** Expands the bounding boxes (scale 2.0x) to provide context.
-3.  **Selective Inference:**
-    * Instead of processing the whole 4K frame, it runs **YOLO** *only* on the cropped ROIs.
-    * *Benefit:* Extremely fast on empty skies; scales computation linearly with the number of moving objects.
+1.  **Global Motion Compensation (GMC):** To prevent the algorithm from being triggered by camera movement, it aligns the previous frame to the current frame using a homography matrix calculated from tracked features.
+2.  **Motion Proposals:** Computes the absolute difference zwischen stabilized frames and applies morphological operations (Close, Dilate) to isolate moving blobs. Contours are filtered by area ($50 < A < 5000$) to identify candidate bird locations.
+3.  **Context-Aware ROI Expansion:** Each motion candidate is expanded by a scale factor (e.g., 2.0x) and constrained to a minimum size (e.g., $256 \times 256$). This ensures the bird is fully centered and provides enough local context for the YOLO model to succeed.
+4.  **Batched Selective Inference:**
+    *   **Partial Scanning:** YOLO is run *only* on the extracted crops, which are processed in a single batch for high throughput.
+    *   **Temporal Scheduling:** To further optimize, inference is run only every $N$ frames (`detect_every`).
+    *   **Full-Frame Refresh:** Periodically (every $M$ frames), a full scan of the image is performed to verify the entire scene and detect objects that may have been missed by motion detection.
+5.  **Tracking & Persistence:** High-confidence detections are passed to an internal `ObjectTracker` to maintain stable IDs across frames.
 
 ---
 
@@ -87,17 +90,37 @@ The following table summarizes the performance on **Video 0002** (Standard Fligh
 
 ---
 
-## 6. Strategy 10: Motion Proposals + YOLO Classifier (`strategy_10.py`)
-**Type:** Hybrid Two-Stage Detector  
-**Goal:** High-recall motion detection followed by high-precision classification.
+## 6. Strategy 10: Motion-Gated Native Tiling (`strategy_10.py`)
+**Type:** Hybrid Efficiency-Precision Optimized Detector  
+**Goal:** Achieve maximum pixel accuracy for tiny bird detection while maintaining high throughput by gating inference with motion analysis.
 
 ### Algorithm Logic
-1.  **Stage 1: Motion Proposals:**
-    * Uses GMC to stabilize the frame.
-    * Applies dynamic thresholding to find moving "blobs".
-2.  **Stage 2: Precision Verification:**
-    * **Crop & Pad:** Crops the moving blob from the high-res 4K frame with ~20px padding.
-    * **Classification:** Feeds the crop into **YOLO** (Classification Mode).
-3.  **Filtering:**
-    * If YOLO confirms the crop contains a bird, the detection is kept.
-    * If YOLO sees noise/leaves, the detection is discarded.
+1.  **Stage 1: Background Stabilization (GMC):** Similar to Strategy 8, it uses a Homography-based Global Motion Compensation to stabilize the 4K frame, ensuring that subsequent motion analysis only detects independently moving objects.
+2.  **Stage 2: Motion-Gated Tiling:**
+    *   **Native Grid:** The frame is divided into a fixed grid of $640 \times 640$ tiles (the native resolution of the YOLO model).
+    *   **Dynamic Thresholding:** A difference frame is calculated and an adaptive threshold ($T = \mu + k\sigma$) is applied.
+    *   **Activity Selection:** For each tile, the algorithm calculates the percentage of "active" pixels. Only tiles exceeding a configurable `motion_pixel_threshold` are marked for processing.
+3.  **Stage 3: Native Resolution Inference:**
+    *   Instead of resizing the entire 4K image down to $640 \times 640$ (which destroys pixel-level detail of small birds), the algorithm runs YOLO *only* on the active native-resolution crops.
+    *   This preserves every single pixel of the target, maximizing the model's ability to distinguish birds from noise.
+4.  **Stage 4: Strategic Full Scans (Keyframes):**
+    *   To prevent "track loss" if a bird temporarily stops moving relative to the background (or for objects already present), the algorithm triggers a **Full Scan Keyframe** every $N$ frames.
+    *   During a keyframe, *every* tile in the grid is processed, regardless of motion.
+5.  **Post-Processing:** Detections from active tiles are merged across overlap boundaries using Global NMS.
+
+---
+
+## 7. Strategy 11: ROI Classifier Filter + Detector (`strategy_11.py`)
+**Type:** Three-Stage Hybrid Detector (Motion -> Classification -> Detection)  
+**Goal:** Optimal efficiency and precision by using a "Fail-Fast" architecture.
+
+### Algorithm Logic
+1.  **Stage 1: Motion Proposals (GMC + Differencing):** Uses stabilized frame differencing to identify candidate motion blobs, exactly like Strategy 8.
+2.  **Stage 2: Lightweight Classification (The "Gater"):**
+    *   Each candidate ROI crop is first passed to a **YOLO Classification model** (e.g., `yolo12n-cls`).
+    *   This model is significantly faster than the detection model.
+    *   If the classifier's top prediction is not a bird or the confidence is below a threshold (`cls_conf_thresh`), the ROI is immediately discarded.
+3.  **Stage 3: High-Precision Detection:**
+    *   Only ROIs that were "verified" as bird-like by the classifier are passed to the **YOLO Detection model**.
+    *   This reduces the number of expensive detection inferences, especially in noisy environments (moving leaves, wind).
+4.  **Benefits:** Combines the high recall of motion detection with the speed of classification and the high precision of localized detection.

@@ -32,6 +32,7 @@ class Config:
             "strategy_8",  # YOLO on ROIs
             "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
             "strategy_10", # Motion Proposals + YOLO Classification
+            "strategy_11", # Strategy 8 + YOLO Classifier Filter
         ]
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
@@ -178,6 +179,25 @@ class Config:
         "bird_class_id": 14,
     }
     
+    STRATEGY_11_CONFIG: Dict[str, Any] = {
+        "model_name": UNIFIED_MODEL_NAME,
+        "classifier_model_name": "yolo11n-cls.pt",
+        "img_size": 640,
+        "cls_img_size": 224,
+        "cls_scale2_size": 448,
+        "cls_overlap": 0.20,
+        "conf_thresh": 0.01,
+        "cls_conf_thresh": 0.5,
+        "iou_thresh": 0.45,
+        "model_classes": [14],
+        "roi_scale": 3.0,
+        "min_roi_size": 10,
+        "max_rois": 100,
+        "fullframe_every": 0,
+        "detect_every": 15,
+        "merge_dist": 150,
+    }
+    
     # ==========================================
     # PARALLEL EXECUTION
     # ==========================================
@@ -259,6 +279,7 @@ class Config:
             "strategy_8": cls.STRATEGY_8_CONFIG,
             "strategy_9": cls.STRATEGY_9_CONFIG,
             "strategy_10": cls.STRATEGY_10_CONFIG,
+            "strategy_11": cls.STRATEGY_11_CONFIG,
         }
         return config_map.get(pipeline_name, {})
 
