@@ -34,8 +34,6 @@ import vis_utils
 import csv_utils
 from pipelines import register_pipeline
 
-logger = logging.getLogger(__name__)
-
 
 def get_base_predictions(model, img, img_size, conf_thresh, classes):
     """
@@ -178,6 +176,7 @@ def run_all_baseline_variants():
     Master orchestrator for all baseline variants.
     Runs the base case, tiling only, and tiling+nms sequentially.
     """
+    logger = logging.getLogger(__name__)
     logger.info("🚀 STARTING ALL BASELINE VARIANTS")
     
     # 1. Base YOLO Inference
@@ -196,6 +195,7 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
     """
     Core logic for running a specific baseline variant.
     """
+    logger = logging.getLogger(f"pipelines.{pipeline_name}")
     logger.info(f"--- STARTING VARIANT: {pipeline_name} ---")
     
     # Load configuration
@@ -303,8 +303,28 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn
             
-            # Calculate processing time for this image
+            # Calculate IoU for matched pairs
+            img_ious = []
+            matched_gt_indices = set()
+            for p_box in preds:
+                best_iou = 0
+                best_idx = -1
+                for g_idx, g_box in enumerate(gts):
+                    if g_idx in matched_gt_indices:
+                        continue
+                    iou = vis_utils.box_iou_xywh(p_box, g_box)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_idx = g_idx
+                if best_idx != -1 and best_iou > 0:
+                    img_ious.append(best_iou)
+                    matched_gt_indices.add(best_idx)
+            
+            img_avg_iou = np.mean(img_ious) if img_ious else 0.0
+            
+            # Calculate processing time and memory for this image
             img_processing_time = time.time() - img_start_time
+            img_mem = vis_utils.get_memory_usage()
             
             # Save per-image result
             image_result = csv_utils.create_image_result(
@@ -317,7 +337,7 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
                 fp=img_fp,
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
-                iou=0.0, mAP=0.0, memory_usage_mb=0.0
+                iou=img_avg_iou, mAP=0.0, memory_usage_mb=img_mem
             )
             tracker.add_image_result(pipeline_name, image_result)
             
@@ -339,39 +359,60 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
-        logger.info(f"{'Video':<8} | {'Fr':<4} | {'FPS':<5} | {'P':<4} | {'R':<4} | {'F1':<4} | {'Time'}")
-        logger.info(f"{video_name:<8} | {n_frames:<4} | {vid_fps:<5.1f} | {prec:<4.2f} | {rec:<4.2f} | {f1:<4.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
+        # Log video metrics using standard utility
+        # Aggregate from detailed data for the video
+        p_data = [d for d in tracker.detailed_data.get(pipeline_name, []) if d['video'] == video_name]
+        vid_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
+        vid_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+        
+        vis_utils.log_video_metrics(logger, video_name, {
+            'n_frames': n_frames,
+            'fps': vid_fps,
+            'precision': prec,
+            'recall': rec,
+            'f1_score': f1,
+            'tp': vid_tp,
+            'fp': vid_fp,
+            'fn': vid_fn,
+            'iou': vid_iou,
+            'mAP': 0.0,
+            'memory_usage_mb': vid_mem,
+            'vid_time': vid_time
+        })
 
-    logger.info("=" * 65)
+    # Calculate overall metrics
     avg_fps = total_frames / total_time_sec if total_time_sec > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info(f"FINAL RESULTS ({pipeline_name}):")
-    logger.info(f"Total Frames:   {total_frames}")
-    logger.info(f"Average FPS:    {avg_fps:.2f}")
-    logger.info(f"Precision:      {overall_prec:.4f}")
-    logger.info(f"Recall:         {overall_rec:.4f}")
-    logger.info(f"F1-Score:       {overall_f1:.4f}")
-    logger.info(f"TP:             {total_tp}")
-    logger.info(f"FP:             {total_fp}")
-    logger.info(f"FN:             {total_fn}")
-    logger.info(f"⏱️  Process took: {str(datetime.timedelta(seconds=int(time.time() - start_time)))}")
-    logger.info("=" * 65)
+    # Aggregate additional metrics from detailed data
+    p_data = tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
 
-    # Update results tracker with summary metrics
-    tracker.update_summary(pipeline_name, {
+    # Prepare summary metrics
+    summary_metrics = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
         "precision": overall_prec,
         "recall": overall_rec,
         "f1_score": overall_f1,
-        "execution_time_sec": time.time() - start_time,
         "tp": total_tp,
         "fp": total_fp,
-        "fn": total_fn
-    })
+        "fn": total_fn,
+        "iou": overall_iou,
+        "mAP": 0.0,
+        "memory_usage_mb": overall_mem,
+        "processing_time_sec": total_time_sec,
+        "execution_time_sec": time.time() - start_time
+    }
+
+    # Log summary using standard utility
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
+
+    # Update results tracker with summary metrics
+    tracker.update_summary(pipeline_name, summary_metrics)
 
     return {
         "pipeline": pipeline_name,

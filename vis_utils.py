@@ -17,9 +17,11 @@ import subprocess
 import zipfile
 import shutil
 import warnings
-from typing import Dict, List, Optional, Tuple
+import datetime
+from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 import cv2
+import psutil
 
 # Suppress Torch/YOLO internal deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch.cuda.amp.autocast")
@@ -61,7 +63,7 @@ def setup_logging(log_name: Optional[str] = None):
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter(
-        '%(name)20s - %(message)s'
+        '%(name)35s - %(message)s'
     )
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
@@ -293,6 +295,12 @@ def calculate_center_distance(box1: List[float], box2: List[float]) -> float:
     return np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
 
 
+def get_memory_usage() -> float:
+    """Returns current process memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / (1024 * 1024)
+
+
 def box_iou_xywh(box1: List[float], box2: List[float]) -> float:
     """Calculate IoU between two boxes in xywh format."""
     x1, y1, w1, h1 = box1
@@ -441,3 +449,98 @@ class ObjectTracker:
         
         # Return confirmed tracks
         return [t['box'] for t in self.tracks if t['hits'] >= self.min_hits]
+
+
+def log_video_metrics(logger: logging.Logger, video_name: str, metrics: Dict[str, Any]):
+    """
+    Logs metrics for a single video in a column-based list.
+    """
+    logger.info("\n" + "-" * 40)
+    logger.info(f"📊 VIDEO RESULTS: {video_name}")
+    logger.info("-" * 40)
+    
+    # Define display order and labels
+    display_mapping = [
+        ('n_frames', 'Frames'),
+        ('fps', 'FPS'),
+        ('precision', 'Precision'),
+        ('recall', 'Recall'),
+        ('f1_score', 'F1 Score'),
+        ('tp', 'TP'),
+        ('fp', 'FP'),
+        ('fn', 'FN'),
+        ('iou', 'IoU'),
+        ('mAP', 'mAP'),
+        ('memory_usage_mb', 'Memory (MB)'),
+        ('vid_time', 'Time')
+    ]
+    
+    for key, label in display_mapping:
+        val = metrics.get(key)
+        if val is None and key == 'vid_time':
+            val = metrics.get('processing_time_sec')
+            
+        if val is not None:
+            if any(x in key.lower() for x in ['fps', 'iou', 'map']):
+                logger.info(f"{label:<20}: {val:.2f}")
+            elif 'time' in key.lower():
+                time_str = str(datetime.timedelta(seconds=int(val)))
+                logger.info(f"{label:<20}: {time_str} ({val:.1f}s)")
+            elif 'memory' in key.lower():
+                logger.info(f"{label:<20}: {val:.1f} MB")
+            elif isinstance(val, (float, np.float32, np.float64)):
+                logger.info(f"{label:<20}: {val:.4f}")
+            else:
+                logger.info(f"{label:<20}: {val}")
+    
+    logger.info("-" * 40 + "\n")
+
+
+def log_pipeline_summary(logger: logging.Logger, pipeline_name: str, metrics: Dict[str, Any]):
+    """
+    Logs the final summary of the pipeline in a column-based list.
+    
+    Args:
+        logger: Logger instance
+        pipeline_name: Name of the pipeline
+        metrics: Dictionary containing pipeline summary metrics
+    """
+    logger.info("\n" + "=" * 50)
+    logger.info(f"🚀 FINAL SUMMARY: {pipeline_name.upper()}")
+    logger.info("=" * 50)
+    
+    # Priority keys for the top of the summary
+    priority_keys = [
+        'total_frames', 'avg_fps', 'precision', 'recall', 'f1_score', 
+        'tp', 'fp', 'fn', 'iou', 'mAP', 'memory_usage_mb', 
+        'processing_time_sec', 'execution_time_sec'
+    ]
+    
+    # Track which keys we've already logged
+    logged_keys = set()
+    
+    for key in priority_keys:
+        if key in metrics:
+            val = metrics[key]
+            label = key.replace('_', ' ').title()
+            if 'fps' in key.lower() or 'iou' in key.lower() or 'map' in key.lower():
+                logger.info(f"{label:<25}: {val:.2f}")
+            elif 'time' in key.lower():
+                time_str = str(datetime.timedelta(seconds=int(val)))
+                logger.info(f"{label:<25}: {time_str} ({val:.1f}s)")
+            elif isinstance(val, float):
+                logger.info(f"{label:<25}: {val:.4f}")
+            else:
+                logger.info(f"{label:<25}: {val}")
+            logged_keys.add(key)
+    
+    # Log any remaining keys
+    for key, val in metrics.items():
+        if key not in logged_keys:
+            label = key.replace('_', ' ').title()
+            if isinstance(val, float):
+                logger.info(f"{label:<25}: {val:.4f}")
+            else:
+                logger.info(f"{label:<25}: {val}")
+            
+    logger.info("=" * 50 + "\n")

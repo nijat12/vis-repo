@@ -71,7 +71,7 @@ class Config:
     # Set to 0 to process all videos
     # Set to N to process first N videos
     # Set to 1 and use VIDEO_INDEXES to select specific videos
-    SHOULD_LIMIT_VIDEO: int = 1
+    SHOULD_LIMIT_VIDEO: int = 100
     VIDEO_INDEXES: List[int] = [1]  # Only used if SHOULD_LIMIT_VIDEO == 1
     
     # GPU/CPU settings
@@ -88,7 +88,7 @@ class Config:
     BASELINE_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.1,
+        "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
     }
@@ -139,7 +139,7 @@ class Config:
     STRATEGY_8_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.1,
+        "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],
         "roi_scale": 3.0,
@@ -170,7 +170,7 @@ class Config:
     STRATEGY_10_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.1,
+        "conf_thresh": 0.01,
         "motion_thresh_scale": 2.0,      # Multiplier for motion threshold (REDUCED from 4.0)
         "motion_pixel_threshold": 5,     # Min pixels to trigger a tile (NEW)
         "use_morphological_dilation": True, # Use dilation to expand motion (NEW)
