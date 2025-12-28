@@ -133,11 +133,21 @@ def run_strategy_10_pipeline():
             if frame is None: continue
             curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # 1. GMC + Motion Mask
+            # 1. GMC + Motion Mask + Keyframe Logic
             active_tiles = []
             active_offsets = []
             
-            if prev_gray is not None:
+            # Keyframe Full Scan: Process all tiles to establish a recall baseline
+            is_keyframe = cfg['keyframe_interval'] > 0 and i % cfg['keyframe_interval'] == 0
+            
+            if is_keyframe:
+                if i % 50 == 0: logger.info(f"⚡ Keyframe Full Scan on frame {i+1}")
+                for (x1, y1, x2, y2) in tile_coords:
+                    active_tiles.append(frame[y1:y2, x1:x2])
+                    active_offsets.append((x1, y1))
+            
+            # Standard Motion Gating on non-keyframes
+            elif prev_gray is not None:
                 warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
                 if warped_prev is not None:
                     # Difference & Dynamic Threshold
@@ -146,11 +156,16 @@ def run_strategy_10_pipeline():
                     final_thresh = max(20, min(80, mean[0][0] + cfg["motion_thresh_scale"] * std[0][0]))
                     _, thresh = cv2.threshold(diff, final_thresh, 255, cv2.THRESH_BINARY)
                     
+                    # Optional: Morphological Dilation to expand motion regions
+                    if cfg.get("use_morphological_dilation", False):
+                        kernel = np.ones((3,3), np.uint8)
+                        thresh = cv2.dilate(thresh, kernel, iterations=1)
+
                     # 2. Gating: Check each tile for motion
                     for (x1, y1, x2, y2) in tile_coords:
                         tile_mask = thresh[y1:y2, x1:x2]
-                        # If more than 20 pixels moved, consider tile active
-                        if cv2.countNonZero(tile_mask) > 20:
+                        # Use configurable pixel threshold
+                        if cv2.countNonZero(tile_mask) > cfg.get("motion_pixel_threshold", 20):
                             active_tiles.append(frame[y1:y2, x1:x2])
                             active_offsets.append((x1, y1))
 

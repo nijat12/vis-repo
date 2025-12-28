@@ -163,8 +163,11 @@ class Config:
     STRATEGY_10_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.1,          # Confidence for YOLO classification
-        "motion_thresh_scale": 4.0,  # multiplier for motion threshold
+        "conf_thresh": 0.1,
+        "motion_thresh_scale": 2.0,      # Multiplier for motion threshold (REDUCED from 4.0)
+        "motion_pixel_threshold": 5,     # Min pixels to trigger a tile (NEW)
+        "use_morphological_dilation": True, # Use dilation to expand motion (NEW)
+        "keyframe_interval": 15,         # Perform full scan every N frames, 0 to disable (NEW)
         "bird_class_id": 14,
         "output_csv": "strat_10_cpu.csv",
     }
