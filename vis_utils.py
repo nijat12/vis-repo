@@ -72,7 +72,12 @@ def setup_logging(log_name: Optional[str] = None):
     if Config.ENABLE_CLOUD_LOGGING:
         try:
             import google.cloud.logging
+            import atexit
             client = google.cloud.logging.Client()
+            
+            # Register a cleanup function to be called on exit
+            atexit.register(client.close)
+            
             cloud_handler = client.get_default_handler()
             cloud_handler.setLevel(logging.INFO)
             logger.addHandler(cloud_handler)

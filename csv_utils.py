@@ -91,36 +91,94 @@ class ResultsTracker:
     
     def _save_local(self):
         """
-        Save results to local CSV files.
+        Save results to local CSV files with enhanced structure.
+        - Detailed CSVs include config headers.
+        - Summary CSV includes overall and per-video tables.
         """
-        if not self.summary_data and not self.detailed_data:
-            logger.debug("No data to save yet.")
+        if not self.detailed_data:
+            logger.debug("No detailed data to save yet.")
             return
 
         try:
             self.saved_files = []
-            
-            # 1. Summary CSV (Transposed)
-            if self.summary_data:
-                summary_df = pd.DataFrame(self.summary_data)
-                summary_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_summary.csv")
-                summary_df.to_csv(summary_path)
-                self.saved_files.append(summary_path)
-            
-            # 2. Detailed CSVs per pipeline
+
+            # 1. Detailed CSVs per pipeline (with config headers)
             for pipeline_name, data in self.detailed_data.items():
                 if data:
-                    detailed_df = pd.DataFrame(data)
-                    # We'll save these in standard row-oriented format for CSVs
-                    # as transposed CSVs with 1000s of columns are hard to read
+                    config_data = Config.get_pipeline_config(pipeline_name)
                     det_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_{pipeline_name}.csv")
-                    detailed_df.to_csv(det_path, index=False)
+                    
+                    with open(det_path, 'w') as f:
+                        f.write(f"# Pipeline: {pipeline_name}\n")
+                        for key, value in config_data.items():
+                            f.write(f"# {key}: {value}\n")
+                    
+                    detailed_df = pd.DataFrame(data)
+                    detailed_df.to_csv(det_path, index=False, mode='a')
                     self.saved_files.append(det_path)
-            
-            logger.debug(f"✅ Saved local CSV results ({len(self.saved_files)} files)")
+
+            # 2. Combined Summary CSV
+            if self.summary_data: 
+                summary_path = os.path.join(Config.OUTPUT_DIR, f"{self.base_name}_summary.csv")
+                
+                with open(summary_path, 'w') as f:
+                    # Consolidated Configuration Table
+                    f.write("PIPELINE CONFIGURATIONS\n")
+                    all_configs = {p: Config.get_pipeline_config(p) for p in self.summary_data.keys()}
+                    config_df = pd.DataFrame(all_configs).fillna('')
+                    config_df.to_csv(f)
+                    f.write("\n\n")
+
+                    # Overall Summary Table (Metrics Only)
+                    f.write("OVERALL SUMMARY\n")
+                    overall_metrics_df = pd.DataFrame(self.summary_data)
+                    overall_metrics_df.to_csv(f)
+                    f.write("\n\n")
+
+                    # Per-Video Summaries (Metrics Only)
+                    all_video_names = sorted(list(set(
+                        img['video'] for _, p_data in self.detailed_data.items() for img in p_data
+                    )))
+
+                    for video_name in all_video_names:
+                        f.write(f"VIDEO SUMMARY: {video_name}\n")
+                        video_summary_data = {}
+
+                        for pipeline_name in self.summary_data.keys():
+                            video_frames = [d for d in self.detailed_data.get(pipeline_name, []) if d['video'] == video_name]
+                            if not video_frames:
+                                continue
+
+                            vid_df = pd.DataFrame(video_frames)
+                            
+                            tp = vid_df['tp'].sum()
+                            fp = vid_df['fp'].sum()
+                            fn = vid_df['fn'].sum()
+                            
+                            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+                            video_summary_data[pipeline_name] = {
+                                'precision': precision, 'recall': recall, 'f1_score': f1_score,
+                                'tp': tp, 'fp': fp, 'fn': fn,
+                                'iou': vid_df['iou'].mean(), 'mAP': vid_df['mAP'].mean(),
+                                'avg_processing_time_sec': vid_df['processing_time_sec'].mean(),
+                                'total_processing_time_sec': vid_df['processing_time_sec'].sum(),
+                                'avg_memory_usage_mb': vid_df['memory_usage_mb'].mean(),
+                            }
+
+                        if video_summary_data:
+                            video_df = pd.DataFrame(video_summary_data)
+                            video_df.to_csv(f, mode='a')
+                        
+                        f.write("\n\n")
+
+                self.saved_files.append(summary_path)
+                logger.debug(f"✅ Saved local CSV results ({len(self.saved_files)} files)")
             
         except Exception as e:
-            logger.error(f"❌ Failed to save local results: {e}")
+            logger.error(f"❌ Failed to save local results: {e}", exc_info=True)
     
     def upload_to_gcs(self):
         """Upload all generated CSV files to GCS bucket."""
@@ -192,10 +250,12 @@ class ResultsTracker:
         return summary_path, gcs_summary_path
 
 
-def create_image_result(video_name: str, frame_name: str, image_path: str, 
-                       predictions: List, ground_truths: List, 
-                       tp: int, fp: int, fn: int,
-                       processing_time_sec: float = 0.0) -> Dict[str, Any]:
+def create_image_result(video_name: str, frame_name: str, image_path: str,
+                        predictions: List, ground_truths: List,
+                        tp: int, fp: int, fn: int,
+                        processing_time_sec: float = 0.0,
+                        iou: float = 0.0, mAP: float = 0.0,
+                        memory_usage_mb: float = 0.0) -> Dict[str, Any]:
     """
     Create a standardized image result dictionary.
     
@@ -209,6 +269,9 @@ def create_image_result(video_name: str, frame_name: str, image_path: str,
         fp: False positives count
         fn: False negatives count
         processing_time_sec: Time in seconds to process this image
+        iou: Intersection over Union for the image
+        mAP: Mean Average Precision for the image
+        memory_usage_mb: Memory usage in megabytes
     
     Returns:
         Dictionary with standardized image-level metrics
@@ -225,6 +288,9 @@ def create_image_result(video_name: str, frame_name: str, image_path: str,
         'precision': tp / (tp + fp) if (tp + fp) > 0 else 0.0,
         'recall': tp / (tp + fn) if (tp + fn) > 0 else 0.0,
         'processing_time_sec': round(processing_time_sec, 4),
+        'iou': round(iou, 4),
+        'mAP': round(mAP, 4),
+        'memory_usage_mb': round(memory_usage_mb, 2),
     }
 
 

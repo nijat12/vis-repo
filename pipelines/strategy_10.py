@@ -232,7 +232,8 @@ def run_strategy_10_pipeline():
             image_result = csv_utils.create_image_result(
                 video_name=video_name, frame_name=img_filename, image_path=img_path,
                 predictions=raw_detections, ground_truths=gts, tp=img_tp, fp=img_fp, fn=img_fn,
-                processing_time_sec=img_processing_time
+                processing_time_sec=img_processing_time,
+                iou=0.0, mAP=0.0, memory_usage_mb=0.0
             )
             tracker.add_image_result("strategy_10", image_result)
             if (i + 1) % 50 == 0: tracker.save_batch("strategy_10", batch_size=50)
@@ -273,15 +274,10 @@ def run_strategy_10_pipeline():
     logger.info(f"TP:             {total_tp}")
     logger.info(f"FP:             {total_fp}")
     logger.info(f"FN:             {total_fn}")
+    logger.info(f"⏱️ Process took: {str(datetime.timedelta(seconds=int(time.time() - start_time_global)))}")
     logger.info("=" * 65)
     
-    # Save to CSV
-    df = pd.DataFrame(results_data)
-    final_path = vis_utils.get_next_version_path(Config.get_output_path("strategy_10"))
-    df.to_csv(final_path, index=False)
     
-    logger.info(f"✅ CSV Saved: {final_path}")
-    logger.info(f"⏱️ Process took: {str(datetime.timedelta(seconds=int(time.time() - start_time_global)))}")
     
     tracker.update_summary("strategy_10", {
         "total_frames": total_frames, 
@@ -301,7 +297,6 @@ def run_strategy_10_pipeline():
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time_global,
-        "output_file": final_path
     }
 
 if __name__ == "__main__":

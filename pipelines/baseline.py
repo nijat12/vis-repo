@@ -258,7 +258,8 @@ def run_baseline_pipeline():
                 tp=img_tp,
                 fp=img_fp,
                 fn=img_fn,
-                processing_time_sec=img_processing_time
+                processing_time_sec=img_processing_time,
+                iou=0.0, mAP=0.0, memory_usage_mb=0.0
             )
             tracker.add_image_result("baseline", image_result)
             
@@ -304,16 +305,9 @@ def run_baseline_pipeline():
     logger.info(f"TP:             {total_tp}")
     logger.info(f"FP:             {total_fp}")
     logger.info(f"FN:             {total_fn}")
+    logger.info(f"⏱️  Process took: {str(datetime.timedelta(seconds=int(time.time() - start_time)))}")
     logger.info("=" * 65)
 
-    # Save results
-    df = pd.DataFrame(results_data)
-    output_path = Config.get_output_path("baseline")
-    final_path = vis_utils.get_next_version_path(output_path)
-    df.to_csv(final_path, index=False)
-    logger.info(f"✅ CSV Saved: {final_path}")
-    logger.info(f"⏱️  Process took: {str(datetime.timedelta(seconds=int(time.time() - start_time)))}")
-    
     # Update results tracker with summary metrics
     tracker.update_summary("baseline", {
         "total_frames": total_frames,
@@ -335,5 +329,4 @@ def run_baseline_pipeline():
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time,
-        "output_file": final_path
     }

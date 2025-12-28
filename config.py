@@ -91,7 +91,6 @@ class Config:
         "conf_thresh": 0.1,
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
-        "output_csv": "baseline_tiled_cpu.csv",
     }
     
     # ==========================================
@@ -109,7 +108,6 @@ class Config:
         "min_threshold": 20,       # Min clamp for dynamic threshold
         "max_threshold": 80,       # Max clamp for dynamic threshold
         "min_hits": 3,             # For persistence tracking
-        "output_csv": "strat_2_cpu.csv",
     }
     
     # ==========================================
@@ -121,7 +119,6 @@ class Config:
         "bird_threshold": 0.01,
         "min_keep": 2,
         "max_keep": 5,
-        "output_csv": "strat_7_cpu.csv",
     }
     
     # ==========================================
@@ -138,7 +135,6 @@ class Config:
         "max_rois": 50,
         "fullframe_every": 0,  # 0 disables full-frame processing
         "detect_every": 15,  # Run YOLO every N frames
-        "output_csv": "strat_8_cpu.csv",
     }
     
     # ==========================================
@@ -154,7 +150,6 @@ class Config:
         "tracker_dist_thresh": 50,   # Pixel distance for DotD association
         "max_age": 15,               # Max frames to keep lost tracks
         "min_hits": 2,               # Min hits to confirm track
-        "output_csv": "strat_9_cpu.csv",
     }
     
     # ==========================================
@@ -169,7 +164,6 @@ class Config:
         "use_morphological_dilation": True, # Use dilation to expand motion (NEW)
         "keyframe_interval": 15,         # Perform full scan every N frames, 0 to disable (NEW)
         "bird_class_id": 14,
-        "output_csv": "strat_10_cpu.csv",
     }
     
     # ==========================================
@@ -237,24 +231,20 @@ class Config:
         
         return cls.ENABLE_KILLSWITCH
 
+
     @classmethod
-    def get_output_path(cls, pipeline_name: str) -> str:
-        """Get the full output path for a pipeline's CSV file."""
-        os.makedirs(cls.OUTPUT_DIR, exist_ok=True)
-        
-        if pipeline_name == "baseline":
-            filename = cls.BASELINE_CONFIG["output_csv"]
-        elif pipeline_name == "strategy_2":
-            filename = cls.STRATEGY_2_CONFIG["output_csv"]
-        elif pipeline_name == "strategy_7":
-            filename = cls.STRATEGY_7_CONFIG["output_csv"]
-        elif pipeline_name == "strategy_8":
-            filename = cls.STRATEGY_8_CONFIG["output_csv"]
-        elif pipeline_name == "strategy_9":
-            filename = cls.STRATEGY_9_CONFIG["output_csv"]
-        elif pipeline_name == "strategy_10":
-            filename = cls.STRATEGY_10_CONFIG["output_csv"]
-        else:
-            filename = f"{pipeline_name}_output.csv"
-        
-        return os.path.join(cls.OUTPUT_DIR, filename)
+    def get_pipeline_config(cls, pipeline_name: str) -> Dict[str, Any]:
+        """
+        Returns the configuration dictionary for a given pipeline name.
+        """
+        config_map = {
+            "baseline": cls.BASELINE_CONFIG,
+            "strategy_2": cls.STRATEGY_2_CONFIG,
+            "strategy_7": cls.STRATEGY_7_CONFIG,
+            "strategy_8": cls.STRATEGY_8_CONFIG,
+            "strategy_9": cls.STRATEGY_9_CONFIG,
+            "strategy_10": cls.STRATEGY_10_CONFIG,
+        }
+        return config_map.get(pipeline_name, {})
+
+
