@@ -37,10 +37,41 @@ from pipelines import register_pipeline
 logger = logging.getLogger(__name__)
 
 
-def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
+def get_base_predictions(model, img, img_size, conf_thresh, classes):
     """
-    Splits image into a 4x3 Grid (12 tiles) and runs inference using YOLO.
-    Optimization: Sends all 12 tiles in ONE BATCH to maximize throughput.
+    Runs simple full-image inference using YOLO.
+    
+    Args:
+        model: YOLO model (ultralytics)
+        img: Input image (BGR format)
+        img_size: Target size for inference
+        conf_thresh: Confidence threshold
+        classes: List of class IDs to filter
+    
+    Returns:
+        List of predictions in [x, y, w, h] format
+    """
+    # YOLO Inference
+    results = model(img, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
+    
+    final_preds = []
+    if len(results) > 0:
+        boxes = results[0].boxes
+        if len(boxes) > 0:
+            # Convert to xywh format [x, y, w, h]
+            # Use cpu() and numpy() for consistent format
+            xyxy_boxes = boxes.xyxy.cpu().numpy()
+            for box in xyxy_boxes:
+                x1, y1, x2, y2 = box
+                final_preds.append([float(x1), float(y1), float(x2-x1), float(y2-y1)])
+                
+    return final_preds
+
+
+def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=True):
+    """
+    Splits image into a 6x4 Grid (24 tiles) and runs inference using YOLO.
+    Optimization: Sends all tiles in BATCHES to maximize throughput.
     
     Args:
         model: YOLO model (ultralytics)
@@ -48,6 +79,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
         img_size: Target size for inference
         conf_thresh: Confidence threshold
         classes: List of class IDs to filter (e.g. [14])
+        use_nms: Whether to apply global Non-Maximum Suppression
     
     Returns:
         List of predictions in [x, y, w, h] format
@@ -117,13 +149,18 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
     if not all_boxes:
         return []
 
-    # Merge and apply Global NMS (Necessary because we stitched tiles)
+    # Merge all predictions
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
     
-    # We use a strict IoU threshold here to merge duplicates at tile boundaries
-    keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
-    final_tensor = pred_boxes[keep_indices]
+    if use_nms:
+        # Apply Global NMS (Necessary because we stitched tiles)
+        # We use a strict IoU threshold here to merge duplicates at tile boundaries
+        keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
+        final_tensor = pred_boxes[keep_indices]
+    else:
+        # Just use all boxes without NMS
+        final_tensor = pred_boxes
 
     # Convert to xywh format [x, y, w, h]
     final_preds = []
@@ -136,18 +173,36 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes):
 
 
 @register_pipeline("baseline")
-def run_baseline_pipeline():
+def run_all_baseline_variants():
     """
-    Execute the baseline pipeline with YOLO tiled inference.
+    Master orchestrator for all baseline variants.
+    Runs the base case, tiling only, and tiling+nms sequentially.
     """
-    logger.info("STARTING BASELINE PIPELINE (YOLO + 4x3 Tiling)")
+    logger.info("🚀 STARTING ALL BASELINE VARIANTS")
+    
+    # 1. Base YOLO Inference
+    _run_baseline_variant("baseline_base", use_tiling=False, use_nms=False)
+    
+    # 2. Tiling only (no NMS)
+    _run_baseline_variant("baseline_w_tiling", use_tiling=True, use_nms=False)
+    
+    # 3. Full Baseline (Tiling + NMS)
+    results = _run_baseline_variant("baseline_w_tiling_and_nms", use_tiling=True, use_nms=True)
+    
+    return results
+
+
+def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
+    """
+    Core logic for running a specific baseline variant.
+    """
+    logger.info(f"--- STARTING VARIANT: {pipeline_name} ---")
     
     # Load configuration
-    cfg = Config.BASELINE_CONFIG
+    cfg = Config.get_pipeline_config(pipeline_name)
     MODEL_NAME = cfg["model_name"]
     IMG_SIZE = cfg["img_size"]
     CONF_THRESH = cfg["conf_thresh"]
-    IOU_THRESH = cfg["iou_thresh"]
     model_classes = cfg["model_classes"]
     
     # Check dependencies
@@ -156,7 +211,7 @@ def run_baseline_pipeline():
         raise ImportError("ultralytics library missing")
 
     # Load model
-    logger.info(f"⏳ Loading Model: {MODEL_NAME}...")
+    logger.info(f"⏳ Loading Model: {MODEL_NAME} for {pipeline_name}...")
     try:
         model = YOLO(MODEL_NAME)
         logger.info(f"✅ Model {MODEL_NAME} Loaded.")
@@ -184,7 +239,7 @@ def run_baseline_pipeline():
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
 
-    logger.info(f"📂 Found {len(video_folders)} videos. Starting Batched Inference (4x3 Tiling)...")
+    logger.info(f"📂 Found {len(video_folders)} videos. Starting variant {pipeline_name}...")
 
     # Initialize results tracker
     tracker = csv_utils.get_results_tracker()
@@ -213,8 +268,11 @@ def run_baseline_pipeline():
             if img is None:
                 continue
 
-            # Pass config args to helper
-            preds = get_tiled_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes)
+            # Select prediction method
+            if use_tiling:
+                preds = get_tiled_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes, use_nms=use_nms)
+            else:
+                preds = get_base_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes)
 
             img_filename = os.path.basename(img_path)
             key = f"{video_name}/{img_filename}"
@@ -261,11 +319,11 @@ def run_baseline_pipeline():
                 processing_time_sec=img_processing_time,
                 iou=0.0, mAP=0.0, memory_usage_mb=0.0
             )
-            tracker.add_image_result("baseline", image_result)
+            tracker.add_image_result(pipeline_name, image_result)
             
             # Save batch every 50 images
             if (i + 1) % 50 == 0:
-                tracker.save_batch("baseline", batch_size=50)
+                tracker.save_batch(pipeline_name, batch_size=50)
 
         vid_end = time.time()
         vid_time = vid_end - vid_start
@@ -284,19 +342,13 @@ def run_baseline_pipeline():
         logger.info(f"{'Video':<8} | {'Fr':<4} | {'FPS':<5} | {'P':<4} | {'R':<4} | {'F1':<4} | {'Time'}")
         logger.info(f"{video_name:<8} | {n_frames:<4} | {vid_fps:<5.1f} | {prec:<4.2f} | {rec:<4.2f} | {f1:<4.2f} | {str(datetime.timedelta(seconds=int(vid_time)))}")
 
-        results_data.append({
-            'Video': video_name, 'Frames': n_frames, 'FPS': round(vid_fps, 2),
-            'Precision': round(prec, 4), 'Recall': round(rec, 4), 'F1': round(f1, 4),
-            'TP': vid_tp, 'FP': vid_fp, 'FN': vid_fn, 'Video_Time': vid_time
-        })
-
     logger.info("=" * 65)
     avg_fps = total_frames / total_time_sec if total_time_sec > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
 
-    logger.info("FINAL RESULTS (Baseline - YOLO):")
+    logger.info(f"FINAL RESULTS ({pipeline_name}):")
     logger.info(f"Total Frames:   {total_frames}")
     logger.info(f"Average FPS:    {avg_fps:.2f}")
     logger.info(f"Precision:      {overall_prec:.4f}")
@@ -309,7 +361,7 @@ def run_baseline_pipeline():
     logger.info("=" * 65)
 
     # Update results tracker with summary metrics
-    tracker.update_summary("baseline", {
+    tracker.update_summary(pipeline_name, {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
         "precision": overall_prec,
@@ -322,7 +374,7 @@ def run_baseline_pipeline():
     })
 
     return {
-        "pipeline": "baseline",
+        "pipeline": pipeline_name,
         "total_frames": total_frames,
         "avg_fps": avg_fps,
         "precision": overall_prec,

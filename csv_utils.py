@@ -131,7 +131,25 @@ class ResultsTracker:
 
                     # Overall Summary Table (Metrics Only)
                     f.write("OVERALL SUMMARY\n")
-                    overall_metrics_df = pd.DataFrame(self.summary_data)
+                    
+                    # Supplement summary_data with aggregated metrics from detailed_data
+                    enhanced_summary = {}
+                    for pipeline_name, metrics in self.summary_data.items():
+                        enhanced_metrics = metrics.copy()
+                        p_data = self.detailed_data.get(pipeline_name, [])
+                        if p_data:
+                            # Use pandas for easy aggregation
+                            df = pd.DataFrame(p_data)
+                            if 'iou' in df.columns: enhanced_metrics['iou'] = df['iou'].mean()
+                            if 'mAP' in df.columns: enhanced_metrics['mAP'] = df['mAP'].mean()
+                            if 'processing_time_sec' in df.columns:
+                                enhanced_metrics['avg_processing_time_sec'] = df['processing_time_sec'].mean()
+                                enhanced_metrics['total_processing_time_sec'] = df['processing_time_sec'].sum()
+                            if 'memory_usage_mb' in df.columns:
+                                enhanced_metrics['avg_memory_usage_mb'] = df['memory_usage_mb'].mean()
+                        enhanced_summary[pipeline_name] = enhanced_metrics
+
+                    overall_metrics_df = pd.DataFrame(enhanced_summary)
                     overall_metrics_df.to_csv(f)
                     f.write("\n\n")
 
@@ -159,12 +177,17 @@ class ResultsTracker:
                             recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
                             f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
+                            video_time = vid_df['processing_time_sec'].sum()
+                            video_fps = len(vid_df) / video_time if video_time > 0 else 0.0
+
                             video_summary_data[pipeline_name] = {
+                                'total_frames': len(vid_df),
+                                'avg_fps': video_fps,
                                 'precision': precision, 'recall': recall, 'f1_score': f1_score,
                                 'tp': tp, 'fp': fp, 'fn': fn,
                                 'iou': vid_df['iou'].mean(), 'mAP': vid_df['mAP'].mean(),
                                 'avg_processing_time_sec': vid_df['processing_time_sec'].mean(),
-                                'total_processing_time_sec': vid_df['processing_time_sec'].sum(),
+                                'total_processing_time_sec': video_time,
                                 'avg_memory_usage_mb': vid_df['memory_usage_mb'].mean(),
                             }
 

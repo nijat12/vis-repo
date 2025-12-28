@@ -92,6 +92,18 @@ class Config:
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
     }
+
+    BASELINE_BASE_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG
+    }
+
+    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG
+    }
+
+    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG
+    }
     
     # ==========================================
     # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLO)
@@ -239,6 +251,9 @@ class Config:
         """
         config_map = {
             "baseline": cls.BASELINE_CONFIG,
+            "baseline_base": cls.BASELINE_BASE_CONFIG,
+            "baseline_w_tiling": cls.BASELINE_W_TILING_CONFIG,
+            "baseline_w_tiling_and_nms": cls.BASELINE_W_TILING_AND_NMS_CONFIG,
             "strategy_2": cls.STRATEGY_2_CONFIG,
             "strategy_7": cls.STRATEGY_7_CONFIG,
             "strategy_8": cls.STRATEGY_8_CONFIG,
