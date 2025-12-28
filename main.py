@@ -96,7 +96,7 @@ def main():
         # Validate configuration
         logger.info("📋 Validating configuration...")
         Config.validate()
-        logger.info(f"✅ Configuration valid. Enabled pipelines: {Config.ENABLED_PIPELINES}")
+        logger.info(f"✅ Configuration valid. Enabled pipelines: {Config.get_runtime_pipelines()}")
         
         # Authenticate with GCS
         logger.info("🔐 Authenticating with Google Cloud Storage...")
@@ -131,8 +131,8 @@ def main():
             sys.exit(1)
         
         # Determine number of workers
-        num_workers = min(Config.MAX_WORKERS, len(Config.ENABLED_PIPELINES))
-        logger.info(f"⚙️  Parallel execution: {num_workers} workers for {len(Config.ENABLED_PIPELINES)} pipelines")
+        num_workers = min(Config.MAX_WORKERS, len(Config.get_runtime_pipelines()))
+        logger.info(f"⚙️  Parallel execution: {num_workers} workers for {len(Config.get_runtime_pipelines())} pipelines")
         
         # Execute pipelines in parallel
         logger.info("EXECUTING PIPELINES")
@@ -141,11 +141,11 @@ def main():
         
         if num_workers == 1:
             # Sequential execution
-            results = [run_single_pipeline(p) for p in Config.ENABLED_PIPELINES]
+            results = [run_single_pipeline(p) for p in Config.get_runtime_pipelines()]
         else:
             # Parallel execution
             with Pool(processes=num_workers) as pool:
-                results = pool.map(run_single_pipeline, Config.ENABLED_PIPELINES)
+                results = pool.map(run_single_pipeline, Config.get_runtime_pipelines())
         
         overall_time = time.time() - overall_start
         

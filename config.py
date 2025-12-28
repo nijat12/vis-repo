@@ -19,16 +19,30 @@ class Config:
     # ==========================================
     # PIPELINE SELECTION
     # ==========================================
-    # Enable/disable pipelines independently
-    # Set to True to run, False to skip
-    ENABLED_PIPELINES: List[str] = [
-        "baseline",      # YOLO with 4x3 tiled inference
-        "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
-        "strategy_7",  # Motion compensation + CNN verifier
-        "strategy_8",  # YOLO on ROIs
-        "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
-        "strategy_10", # Motion Proposals + YOLO Classification
-    ]
+    @classmethod
+    def get_runtime_pipelines(cls) -> List[str]:
+        """
+        Check if pipelines are enabled, checking runtime_config.json first.
+        Allows enabling/disabling at runtime without restarting the process.
+        """
+        default_pipelines: List[str] = [
+            "baseline",      # YOLO with 4x3 tiled inference
+            "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
+            "strategy_7",  # Motion compensation + CNN verifier
+            "strategy_8",  # YOLO on ROIs
+            "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
+            "strategy_10", # Motion Proposals + YOLO Classification
+        ]
+        runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
+        if os.path.exists(runtime_config_path):
+            try:
+                with open(runtime_config_path, 'r') as f:
+                    data = json.load(f)
+                    return data.get("ENABLED_PIPELINES", default_pipelines)
+            except Exception as e:
+                print(f"⚠️  Error reading runtime_config.json: {e}")
+        
+        return default_pipelines
     
     # ==========================================
     # GCS CONFIGURATION
@@ -160,7 +174,6 @@ class Config:
     # ==========================================
     # Number of CPU workers for parallel pipeline execution
     # Set to 1 for sequential execution
-    # Set to len(ENABLED_PIPELINES) to run all pipelines in parallel
     MAX_WORKERS: int = 1
     
     # ==========================================
@@ -190,8 +203,8 @@ class Config:
     @classmethod
     def validate(cls) -> None:
         """Validate configuration and raise errors if invalid."""
-        if not cls.ENABLED_PIPELINES:
-            raise ValueError("At least one pipeline must be enabled in ENABLED_PIPELINES")
+        if not cls.get_runtime_pipelines():
+            raise ValueError("At least one pipeline must be enabled in runtime_config.json")
         
         if cls.SHOULD_LIMIT_VIDEO == 1 and not cls.VIDEO_INDEXES:
             raise ValueError("VIDEO_INDEXES must be specified when SHOULD_LIMIT_VIDEO == 1")
