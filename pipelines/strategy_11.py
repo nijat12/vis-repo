@@ -51,6 +51,7 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
     3. Motion-gating (optional) to skip empty skies.
     4. Hit verification with 640px detector.
     """
+    logger = logging.getLogger("pipelines.strategy_11.predictions")
     if det_model is None or cls_model is None:
         return []
 
@@ -66,62 +67,72 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
     # 2. Extract & Filter by Motion (if mask provided)
     for (x0, y0, x1, y1) in grid_small:
         if motion_mask is not None:
-            if cv2.countNonZero(motion_mask[y0:y1, x0:x1]) < 10:
+            m_pixels = cv2.countNonZero(motion_mask[y0:y1, x0:x1])
+            if m_pixels < 5: # Slightly lower threshold for tiny birds
                 continue
         active_crops.append(img_bgr[y0:y1, x0:x1])
         active_info.append((x0, y0, cfg['cls_img_size']))
 
     for (x0, y0, x1, y1) in grid_large:
         if motion_mask is not None:
-            if cv2.countNonZero(motion_mask[y0:y1, x0:x1]) < 10:
+            m_pixels = cv2.countNonZero(motion_mask[y0:y1, x0:x1])
+            if m_pixels < 10:
                 continue
-        # We extract 448px, YOLO will resize to 224px for classification
         active_crops.append(img_bgr[y0:y1, x0:x1])
         active_info.append((x0, y0, cfg['cls_scale2_size']))
 
     if not active_crops:
+        if frame_idx % 100 == 0:
+            logger.debug(f"Frame {frame_idx}: No active crops after motion gating.")
         return []
 
     # 3. Stage 1: Batch Classification (imgsz=224)
-    # The classifier model is presumably trained on 224px.
     cls_results = cls_model(active_crops, imgsz=cfg['cls_img_size'], verbose=False)
     
-    # Identify unique centers for verification
     verification_centers = []
     
+    # Common bird-related keywords in ImageNet for better filtering
+    bird_keywords = ["bird", "finch", "bunting", "indigo", "robin", "bulbul", "jay", "magpie", 
+                     "chickadee", "water ouzel", "dipper", "kite", "eagle", "vulture", "falcon"]
+
     for idx, res in enumerate(cls_results):
         top1_idx = res.probs.top1
         top1_conf = float(res.probs.top1conf)
+        top1_name = res.names[top1_idx].lower()
         
-        is_bird = "bird" in res.names[top1_idx].lower()
+        # Robust bird check
+        is_bird = any(kw in top1_name for kw in bird_keywords)
+        
         if is_bird and top1_conf >= cfg['cls_conf_thresh']:
-            # Calculate global center of this tile
             x0, y0, sz = active_info[idx]
             cx, cy = x0 + sz/2, y0 + sz/2
             verification_centers.append((cx, cy))
+            logger.debug(f"Frame {frame_idx}: Hit! Tile at ({x0}, {y0}) classified as '{top1_name}' ({top1_conf:.2f})")
+        elif top1_conf > 0.3: # Log interesting near-misses for debug
+            logger.debug(f"Frame {frame_idx}: Candidate at ({active_info[idx][0]}, {active_info[idx][1]}) was '{top1_name}' ({top1_conf:.2f})")
 
     if not verification_centers:
         return []
 
+    logger.info(f"Frame {frame_idx}: {len(verification_centers)} potential bird regions found by classifier.")
+
     # 4. Stage 2: Verification with 640px Detector
-    # Group centers that are close to each other to minimize duplicated 640px crops
     final_verification_crops = []
     final_verification_offsets = []
     
     merged_centers = []
-    while verification_centers:
-        curr = verification_centers.pop(0)
+    temp_centers = verification_centers.copy()
+    while temp_centers:
+        curr = temp_centers.pop(0)
         merged_centers.append(curr)
-        verification_centers = [c for c in verification_centers if np.sqrt((c[0]-curr[0])**2 + (c[1]-curr[1])**2) > 200]
+        temp_centers = [c for c in temp_centers if np.sqrt((c[0]-curr[0])**2 + (c[1]-curr[1])**2) > 200]
 
     for (cx, cy) in merged_centers:
-        # Generate 640x640 ROI centered on cx, cy
         x0 = int(max(0, cx - cfg['img_size']/2))
         y0 = int(max(0, cy - cfg['img_size']/2))
         x1 = int(min(w_img, x0 + cfg['img_size']))
         y1 = int(min(h_img, y0 + cfg['img_size']))
         
-        # Adjust if too close to right/bottom edge
         if x1 - x0 < cfg['img_size']: x0 = max(0, x1 - cfg['img_size'])
         if y1 - y0 < cfg['img_size']: y0 = max(0, y1 - cfg['img_size'])
         
@@ -152,8 +163,10 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
             
             all_boxes.append(shifted_boxes)
             all_scores.append(local_scores)
+            logger.info(f"Frame {frame_idx}: Detector CONFIRMED {len(boxes)} bird(s).")
 
     if not all_boxes:
+        logger.debug(f"Frame {frame_idx}: Detector rejected all {len(final_verification_crops)} classifier proposals.")
         return []
 
     pred_boxes = torch.cat(all_boxes, dim=0)
@@ -217,7 +230,11 @@ def run_strategy_11_pipeline():
         vid_start = time.time()
         n_frames = len(images)
         prev_gray = None
-        obj_tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=4, min_hits=2)
+        # Increase skip threshold to bridge the gap between detection frames (every 5 frames)
+        # min_hits=1 ensures we don't drop discoveries immediately.
+        obj_tracker = vis_utils.ObjectTracker(dist_thresh=100, max_frames_to_skip=cfg['detect_every'], min_hits=1)
+        
+        last_final_preds = [] # Persistent results across skipped frames
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()
@@ -229,10 +246,9 @@ def run_strategy_11_pipeline():
             if frame is None: continue
             curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            raw_detections = []
-
             # Stage 1: Classifier-Gated Detection
             if i % cfg['detect_every'] == 0:
+                raw_detections = []
                 motion_mask = None
                 if prev_gray is not None:
                     warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
@@ -249,9 +265,13 @@ def run_strategy_11_pipeline():
                 raw_detections = get_filtered_roi_predictions(
                     det_model, cls_model, frame, cfg, i, motion_mask=motion_mask
                 )
+                
+                # Update tracker only on discovery frames
+                last_final_preds = obj_tracker.update(raw_detections)
 
             prev_gray = curr_gray
-            final_preds = obj_tracker.update(raw_detections)
+            # Use persistent predictions for all frames
+            final_preds = last_final_preds
 
             # Evaluation
             img_filename = os.path.basename(img_path)
@@ -260,19 +280,31 @@ def run_strategy_11_pipeline():
             matched_gt = set()
             img_tp = img_fp = 0
 
-            for p_box in final_preds:
+            if i == 0 and gts:
+                logger.info(f"DEBUG: Video {video_name} Frame 0 First GT: {gts[0]}")
+            
+            p_data_log = []
+            for p_idx, p_box in enumerate(final_preds):
                 best_dist = 10000
                 best_idx = -1
-                for idx, g_box in enumerate(gts):
-                    if idx in matched_gt: continue
+                for g_idx, g_box in enumerate(gts):
+                    if g_idx in matched_gt: continue
                     d = vis_utils.calculate_center_distance(p_box, g_box)
-                    if d < best_dist: best_dist = d; best_idx = idx
+                    if d < best_dist: 
+                        best_dist = d
+                        best_idx = g_idx
 
-                if best_dist <= 30:
+                # Distance threshold for TP match (increased to 100 for 4K)
+                if best_dist <= 100:
                     vid_tp += 1; img_tp += 1
                     matched_gt.add(best_idx)
                 else:
                     vid_fp += 1; img_fp += 1
+                    if i % 10 == 0 and best_idx != -1: # Only log occasionally
+                        p_data_log.append(f"P{p_idx} ({int(p_box[0])},{int(p_box[1])}) dist={best_dist:.1f} to GT{best_idx}")
+
+            if p_data_log and i % 50 == 0:
+                logger.debug(f"Frame {i} Eval: {len(final_preds)} preds, {len(gts)} GTs. Nearest Match Distances: {p_data_log[:3]}")
 
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn

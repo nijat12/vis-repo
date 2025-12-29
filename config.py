@@ -72,8 +72,8 @@ class Config:
     # Set to 0 to process all videos
     # Set to N to process first N videos
     # Set to 1 and use VIDEO_INDEXES to select specific videos
-    SHOULD_LIMIT_VIDEO: int = 100
-    VIDEO_INDEXES: List[int] = [1]  # Only used if SHOULD_LIMIT_VIDEO == 1
+    SHOULD_LIMIT_VIDEO: int = 1
+    VIDEO_INDEXES: List[int] = [1,2,3]  # Only used if SHOULD_LIMIT_VIDEO == 1
     
     # GPU/CPU settings
     IS_GPU_ALLOWED: bool = False  # Set to True if GPU is available
@@ -186,15 +186,15 @@ class Config:
         "cls_img_size": 224,
         "cls_scale2_size": 448,
         "cls_overlap": 0.20,
-        "conf_thresh": 0.01,
-        "cls_conf_thresh": 0.5,
+        "conf_thresh": 0.4,
+        "cls_conf_thresh": 0.8,
         "iou_thresh": 0.45,
         "model_classes": [14],
         "roi_scale": 3.0,
         "min_roi_size": 10,
         "max_rois": 100,
         "fullframe_every": 0,
-        "detect_every": 15,
+        "detect_every": 5,
         "merge_dist": 150,
     }
     
