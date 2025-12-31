@@ -52,22 +52,27 @@ class ResultsTracker:
 
         # Tracking saved files for GCS upload
         self.saved_files: List[str] = []
+        self.pipeline_configs = {}  # Store runtime configs
 
         # Ensure output directory exists
         os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
         logger.info(f"📊 Results tracker initialized: {self.base_name}")
 
-    def update_summary(self, pipeline_name: str, metrics: Dict[str, Any]):
-        """
-        Update summary metrics for a pipeline.
+    def update_summary(
+        self,
+        pipeline_name: str,
+        metrics: Dict[str, Any],
+        config: Dict[str, Any] = None,
+    ):
+        """Update summary metrics for a pipeline."""
+        if pipeline_name not in self.summary_data:
+            self.summary_data[pipeline_name] = {}
+        self.summary_data[pipeline_name].update(metrics)
 
-        Args:
-            pipeline_name: Name of the pipeline (e.g., 'baseline', 'strategy_7')
-            metrics: Dictionary of metrics (precision, recall, f1, etc.)
-        """
-        self.summary_data[pipeline_name] = metrics
-        logger.debug(f"Updated summary for {pipeline_name}")
+        if config:
+            self.pipeline_configs[pipeline_name] = config
+
         self._save_local()
 
     def add_image_result(self, pipeline_name: str, image_data: Dict[str, Any]):
@@ -130,8 +135,9 @@ class ResultsTracker:
                 with open(summary_path, "w") as f:
                     # Consolidated Configuration Table
                     f.write("PIPELINE CONFIGURATIONS\n")
+                    # Use stored configs, fallback to empty dict if missing
                     all_configs = {
-                        p: Config.get_pipeline_config(p)
+                        p: self.pipeline_configs.get(p, {})
                         for p in self.summary_data.keys()
                     }
                     config_df = pd.DataFrame(all_configs).fillna("")
@@ -153,6 +159,8 @@ class ResultsTracker:
                                 enhanced_metrics["iou"] = df["iou"].mean()
                             if "mAP" in df.columns:
                                 enhanced_metrics["mAP"] = df["mAP"].mean()
+                            elif "AP" in df.columns:
+                                enhanced_metrics["AP"] = df["AP"].mean()
                             if "processing_time_sec" in df.columns:
                                 enhanced_metrics["avg_processing_time_sec"] = df[
                                     "processing_time_sec"
@@ -223,7 +231,7 @@ class ResultsTracker:
                                 "fp": fp,
                                 "fn": fn,
                                 "iou": vid_df["iou"].mean(),
-                                "mAP": vid_df["mAP"].mean(),
+                                "AP": vid_df["AP"].mean(),
                                 "avg_processing_time_sec": vid_df[
                                     "processing_time_sec"
                                 ].mean(),
@@ -332,7 +340,6 @@ def create_image_result(
     fn: int,
     processing_time_sec: float = 0.0,
     iou: float = 0.0,
-    mAP: float = 0.0,
     memory_usage_mb: float = 0.0,
 ) -> Dict[str, Any]:
     """
@@ -349,7 +356,6 @@ def create_image_result(
         fn: False negatives count
         processing_time_sec: Time in seconds to process this image
         iou: Intersection over Union for the image
-        mAP: Mean Average Precision for the image
         memory_usage_mb: Memory usage in megabytes
 
     Returns:
@@ -368,7 +374,6 @@ def create_image_result(
         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0.0,
         "processing_time_sec": round(processing_time_sec, 4),
         "iou": round(iou, 4),
-        "mAP": round(mAP, 4),
         "memory_usage_mb": round(memory_usage_mb, 2),
     }
 

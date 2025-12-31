@@ -311,7 +311,6 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
                 iou=img_avg_iou,
-                mAP=0.0,
                 memory_usage_mb=img_mem,
             )
             results_tracker.add_image_result(pipeline_name, image_result)
@@ -386,5 +385,5 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         "execution_time_sec": time.time() - start_time,
     }
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
-    results_tracker.update_summary(pipeline_name, summary_metrics)
+    results_tracker.update_summary(pipeline_name, summary_metrics, config=config)
     return {"pipeline": pipeline_name, "status": "completed", **summary_metrics}

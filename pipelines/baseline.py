@@ -376,7 +376,6 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
                 iou=img_avg_iou,
-                mAP=0.0,
                 memory_usage_mb=img_mem,
             )
             tracker.add_image_result(pipeline_name, image_result)
@@ -484,7 +483,7 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
 
     # Update results tracker with summary metrics
-    tracker.update_summary(pipeline_name, summary_metrics)
+    tracker.update_summary(pipeline_name, summary_metrics, config=config)
 
     return {
         "pipeline": pipeline_name,
