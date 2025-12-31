@@ -31,10 +31,10 @@ class Config:
             "baseline_w_tiling_and_nms",  # YOLO with 4x3 tiled inference
             # "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
             # "strategy_7",  # Motion compensation + CNN verifier
-            "strategy_8",  # YOLO on ROIs
+            # "strategy_8",  # YOLO on ROIs
             # "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
-            "strategy_10",  # Motion Proposals + YOLO Classification
-            "strategy_11",  # Strategy 8 + YOLO Classifier Filter
+            # "strategy_10",  # Motion Proposals + YOLO Classification
+            # "strategy_11",  # Strategy 8 + YOLO Classifier Filter
         ]
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
@@ -77,7 +77,7 @@ class Config:
     # Set to 0 to process all videos
     # Set to N to process first N videos
     # Set to 1 and use VIDEO_INDEXES to select specific videos
-    SHOULD_LIMIT_VIDEO: int = 1
+    SHOULD_LIMIT_VIDEO: int = 100
     VIDEO_INDEXES: List[int] = [3]  # Only used if SHOULD_LIMIT_VIDEO == 1
 
     # GPU/CPU settings
