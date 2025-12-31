@@ -139,6 +139,7 @@ def process_video_worker(args):
     Worker function to process a single video for Strategy 2.
     """
     video_path, config, gt_data = args
+    vis_utils.setup_worker_logging(config.get("log_queue"))
     logger = logging.getLogger(config["run_name"])
     if YOLO is None:
         raise ImportError("ultralytics library missing")
