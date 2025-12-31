@@ -29,12 +29,14 @@ class Config:
             "baseline_base",  # YOLO with 4x3 tiled inference
             "baseline_w_tiling",  # YOLO with 4x3 tiled inference
             "baseline_w_tiling_and_nms",  # YOLO with 4x3 tiled inference
-            # "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
+            "strategy_2",  # GMC + Dynamic Thresholding + YOLO Refiner
             # "strategy_7",  # Motion compensation + CNN verifier
-            # "strategy_8",  # YOLO on ROIs
+            "strategy_8",  # YOLO on ROIs
             # "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
-            # "strategy_10",  # Motion Proposals + YOLO Classification
-            # "strategy_11",  # Strategy 8 + YOLO Classifier Filter
+            "strategy_10",  # Motion Proposals + YOLO Classification
+            "strategy_11",  # Strategy 8 + YOLO Classifier Filter
+            "strategy_12",
+            "strategy_13",
         ]
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
@@ -153,7 +155,7 @@ class Config:
         "min_roi_size": 192,
         "max_rois": 10,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 3,  # Run YOLO every N frames
+        "detect_every": 5,  # Run YOLO every N frames
     }
 
     # ==========================================
@@ -195,7 +197,7 @@ class Config:
         "min_roi_size": 192,
         "max_rois": 10,
         "fullframe_every": 0,
-        "detect_every": 3,
+        "detect_every": 5,
         "merge_dist": 150,
     }
 

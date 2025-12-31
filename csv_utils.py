@@ -120,7 +120,8 @@ class ResultsTracker:
                     with open(det_path, "w") as f:
                         f.write(f"# Pipeline: {pipeline_name}\n")
                         for key, value in config_data.items():
-                            f.write(f"# {key}: {value}\n")
+                            if key != "log_queue":
+                                f.write(f"# {key}: {value}\n")
 
                     detailed_df = pd.DataFrame(data)
                     detailed_df.to_csv(det_path, index=False, mode="a")
@@ -137,8 +138,13 @@ class ResultsTracker:
                     f.write("PIPELINE CONFIGURATIONS\n")
                     # Use stored configs, fallback to empty dict if missing
                     all_configs = {
-                        p: self.pipeline_configs.get(p, {})
+                        p: {
+                            k: v
+                            for k, v in self.pipeline_configs.get(p, {}).items()
+                            if k != "log_queue"
+                        }
                         for p in self.summary_data.keys()
+                        if p != "log_queue"
                     }
                     config_df = pd.DataFrame(all_configs).fillna("")
                     config_df.to_csv(f)

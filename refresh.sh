@@ -1,4 +1,5 @@
 pkill -f main.py
+killall -9 Python
 rm -rf metrics/*
 rm -rf logs/*
 git fetch && git pull --rebase

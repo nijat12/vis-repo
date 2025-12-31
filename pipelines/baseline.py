@@ -224,7 +224,7 @@ def process_video_worker(args):
 
     # Setup logging for the worker
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config.get("model_name", "worker"))
+    logger = logging.getLogger(config.get("run_name"))
     if YOLO is None:
         raise ImportError("ultralytics library missing")
 

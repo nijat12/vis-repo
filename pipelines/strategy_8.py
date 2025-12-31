@@ -187,22 +187,32 @@ def process_video_worker(args):
         frame = cv2.imread(img_path)
         if frame is None:
             # Create an empty image_result for a missing frame
-            image_results.append(csv_utils.create_image_result(
-                video_name=video_name,
-                frame_name=os.path.basename(img_path),
-                image_path=img_path,
-                predictions=[], ground_truths=[],
-                tp=0, fp=0, fn=0,
-                processing_time_sec=(time.time() - img_start_time),
-                iou=0.0, memory_usage_mb=vis_utils.get_memory_usage()
-            ))
-            continue # skip to next image
+            image_results.append(
+                csv_utils.create_image_result(
+                    video_name=video_name,
+                    frame_name=os.path.basename(img_path),
+                    image_path=img_path,
+                    predictions=[],
+                    ground_truths=[],
+                    tp=0,
+                    fp=0,
+                    fn=0,
+                    processing_time_sec=(time.time() - img_start_time),
+                    iou=0.0,
+                    memory_usage_mb=vis_utils.get_memory_usage(),
+                )
+            )
+            continue  # skip to next image
 
         curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         raw_detections = []
-        frame_was_detected = False # Flag to track if detection was attempted for this frame
+        frame_was_detected = (
+            False  # Flag to track if detection was attempted for this frame
+        )
 
-        if i % config["detect_every"] == 0: # Only run detection logic on "detect_every" frames
+        if (
+            i % config["detect_every"] == 0
+        ):  # Only run detection logic on "detect_every" frames
             frame_was_detected = True
             if use_sahi:
                 raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
@@ -230,12 +240,13 @@ def process_video_worker(args):
 
                         # Run YOLO on ROIs
                         if len(proposals) > 0 or (
-                            config["fullframe_every"] and i % config["fullframe_every"] == 0
+                            config["fullframe_every"]
+                            and i % config["fullframe_every"] == 0
                         ):
                             raw_detections = get_roi_predictions(
                                 model, frame, proposals, config, frame_idx=i
                             )
-        prev_gray = curr_gray # Always update prev_gray for motion compensation
+        prev_gray = curr_gray  # Always update prev_gray for motion compensation
 
         # Tracking
         # The tracker is updated regardless, so it can maintain internal state.
@@ -245,17 +256,17 @@ def process_video_worker(args):
 
         # Evaluation
         key = f"{video_name}/{os.path.basename(img_path)}"
-        gts = gt_data.get(key, []) # Get GTs for the current frame
-        
+        gts = gt_data.get(key, [])  # Get GTs for the current frame
+
         final_preds = []
         img_tp = 0
         img_fp = 0
         img_fn = 0
         img_avg_iou = 0.0
-        
-        if frame_was_detected: # This frame was chosen for detection
-            final_preds = tracker_output_for_frame # Use predictions from tracker
-            
+
+        if frame_was_detected:  # This frame was chosen for detection
+            final_preds = tracker_output_for_frame  # Use predictions from tracker
+
             # Store for mAP calc (only if detection was active)
             vid_all_preds.append(final_preds)
             vid_all_gts.append(gts)
@@ -303,18 +314,20 @@ def process_video_worker(args):
                     matched_gt_indices.add(best_idx)
 
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-        else: # This is a skipped frame, no detection was performed or intended for evaluation
+        else:  # This is a skipped frame, no detection was performed or intended for evaluation
             # For skipped frames, we explicitly ensure metrics are zero.
             # No predictions are "made" from the perspective of this pipeline.
-            final_preds = [] # No predictions for skipped frames
+            final_preds = []  # No predictions for skipped frames
 
             # Store for mAP calc. Even if no detections, we need a corresponding entry for GTs.
             # If final_preds is empty, mAP calculation will naturally handle this.
-            vid_all_preds.append(final_preds) # Empty predictions for skipped frame
-            vid_all_gts.append(gts) # GTs exist, but won't contribute to TP/FP/FN for this frame.
-            
+            vid_all_preds.append(final_preds)  # Empty predictions for skipped frame
+            vid_all_gts.append(
+                gts
+            )  # GTs exist, but won't contribute to TP/FP/FN for this frame.
+
             # Crucially, for skipped frames, no FNs are counted.
-            img_tp = 0 
+            img_tp = 0
             img_fp = 0
             img_fn = 0
             # Note: vid_tp, vid_fp, vid_fn are not incremented for skipped frames.
