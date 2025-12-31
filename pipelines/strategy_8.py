@@ -396,6 +396,10 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                 "TP": vid_tp,
                 "FP": vid_fp,
                 "FN": vid_fn,
+                "IoU": round(vid_iou, 4),
+                "mAP": round(vid_map, 4),
+                "DotD": round(vid_dotd, 4),
+                "Memory (MB)": round(vid_mem, 4),
                 "Video_Time": vid_time,
             }
         )

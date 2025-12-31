@@ -231,7 +231,6 @@ class ResultsTracker:
                                 "fp": fp,
                                 "fn": fn,
                                 "iou": vid_df["iou"].mean(),
-                                "AP": vid_df["AP"].mean(),
                                 "avg_processing_time_sec": vid_df[
                                     "processing_time_sec"
                                 ].mean(),

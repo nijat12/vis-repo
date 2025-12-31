@@ -71,7 +71,7 @@ class Config:
     # PROCESSING PARAMETERS
     # ==========================================
     # List of confidence thresholds to run for each pipeline
-    CONF_THRESHOLDS: List[float] = [0.01, 0.1, 0.2, 0.5]
+    CONF_THRESHOLDS: List[float] = [0.01, 0.05, 0.1, 0.2]
 
     # Video selection
     # Set to 0 to process all videos
