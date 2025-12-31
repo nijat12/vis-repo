@@ -90,6 +90,9 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
 
     results_tracker = csv_utils.get_results_tracker()
     total_tp, total_fp, total_fn, total_time, total_frames = 0, 0, 0, 0, 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
@@ -99,6 +102,12 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
 
         vid_tp, vid_fp, vid_fn, n_frames = 0, 0, 0, len(images)
         vid_start_time = time.time()
+
+        # Metrics accumulation for this video
+        vid_map = 0.0
+        vid_dotd_list = []
+        vid_all_preds = []
+        vid_all_gts = []
 
         all_predictions = defaultdict(list)
         last_keyframe_preds: List[List[float]] = []
@@ -216,10 +225,24 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
                             keep = torchvision.ops.nms(
                                 pred_boxes, pred_scores, config.get("iou_thresh", 0.45)
                             )
-                            current_preds = [
-                                [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
-                                for x1, y1, x2, y2 in pred_boxes[keep]
-                            ]
+                            current_preds = []
+                            # Retrieve selected boxes and scores
+                            kept_boxes = pred_boxes[keep]
+                            kept_scores = pred_scores[keep]
+
+                            # Convert to list [x, y, w, h, score]
+                            for k_idx, box in enumerate(kept_boxes):
+                                x1, y1, x2, y2 = box.tolist()
+                                score = float(kept_scores[k_idx])
+                                current_preds.append(
+                                    [
+                                        float(x1),
+                                        float(y1),
+                                        float(x2 - x1),
+                                        float(y2 - y1),
+                                        float(score),
+                                    ]
+                                )
 
                 all_predictions[i] = current_preds
                 if use_interpolation and last_keyframe_idx != -1:
@@ -238,6 +261,10 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
             key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
             gts = gt_data.get(key, [])
 
+            # Store for mAP calc
+            vid_all_preds.append(final_preds)
+            vid_all_gts.append(gts)
+
             img_tp, img_fp, matched_gt = 0, 0, set()
             img_ious = []
             for p_box in final_preds:
@@ -246,16 +273,29 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
                 for idx, g_box in enumerate(gts):
                     if idx in matched_gt:
                         continue
-                    dist = vis_utils.calculate_center_distance(p_box, g_box)
-                    iou = vis_utils.box_iou_xywh(p_box, g_box)
+                    # p_box is [x, y, w, h, score] or [x, y, w, h]
+                    dist = vis_utils.calculate_center_distance(p_box[:4], g_box)
+                    iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                     if iou > best_iou:
                         best_iou = iou
                     if dist < best_dist:
                         best_dist, best_idx = dist, idx
-                if best_dist <= 30 and best_iou > 0:
-                    img_tp += 1
-                    img_ious.append(best_iou)
-                    matched_gt.add(best_idx)
+                if best_dist <= 30:
+                    # Note: Original code required best_iou > 0 as well for TP?
+                    # "if best_dist <= 30 and best_iou > 0:" was previous logic.
+                    # But often distance match is enough for DotD validation,
+                    # strictly standard assignment often uses IoU.
+                    # Given 'DotD' metric emphasis, let's keep distance as primary for TP/FP count here?
+                    # Actually, let's stick to the previous logic but allow low IoU if dist is close?
+                    # Step 1 instructions said "Evaluate using mAP and Average Dot Distance".
+                    # Let's keep the user's logic: dist <= 30 AND iou > 0
+                    if best_iou > 0:
+                        img_tp += 1
+                        img_ious.append(best_iou)
+                        vid_dotd_list.append(best_dist)
+                        matched_gt.add(best_idx)
+                    else:
+                        img_fp += 1
                 else:
                     img_fp += 1
 
@@ -305,6 +345,10 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
         vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
         vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
+        # Calculate mAP and DotD for video
+        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
         vis_utils.log_video_metrics(
             logger,
             video_name,
@@ -318,7 +362,8 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
                 "fp": vid_fp,
                 "fn": vid_fn,
                 "iou": vid_iou,
-                "mAP": 0.0,
+                "mAP": vid_map,
+                "dotd": vid_dotd,
                 "memory_usage_mb": vid_mem,
                 "vid_time": vid_time,
             },
@@ -328,6 +373,9 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
         total_tp += vid_tp
         total_fp += vid_fp
         total_fn += vid_fn
+        total_videos_processed += 1
+        total_map_sum += vid_map
+        total_dotd_sum += vid_dotd
 
     # Final Summary
     avg_fps = total_frames / total_time if total_time > 0 else 0
@@ -338,6 +386,19 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
         if (overall_prec + overall_rec) > 0
         else 0
     )
+
+    overall_map = (
+        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+    overall_dotd = (
+        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+
+    # Calculate overall IoU/Mem from tracker detailed data
+    p_data = results_tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+
     summary_metrics = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
@@ -347,6 +408,10 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
         "tp": total_tp,
         "fp": total_fp,
         "fn": total_fn,
+        "iou": overall_iou,
+        "mAP": overall_map,
+        "dotd": overall_dotd,
+        "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time,
         "execution_time_sec": time.time() - start_time,
     }

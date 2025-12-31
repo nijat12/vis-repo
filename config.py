@@ -77,8 +77,8 @@ class Config:
     # Set to 0 to process all videos
     # Set to N to process first N videos
     # Set to 1 and use VIDEO_INDEXES to select specific videos
-    SHOULD_LIMIT_VIDEO: int = 100
-    VIDEO_INDEXES: List[int] = [1, 2, 3]  # Only used if SHOULD_LIMIT_VIDEO == 1
+    SHOULD_LIMIT_VIDEO: int = 1
+    VIDEO_INDEXES: List[int] = [3]  # Only used if SHOULD_LIMIT_VIDEO == 1
 
     # GPU/CPU settings
     IS_GPU_ALLOWED: bool = False  # Set to True if GPU is available

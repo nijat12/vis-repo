@@ -99,13 +99,23 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, config: Dict[str, Any]):
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
 
-    keep = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
-    final_boxes = pred_boxes[keep].numpy()
+    # Recover scores
+    final_preds = []
 
-    return [
-        [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
-        for x1, y1, x2, y2 in final_boxes
-    ]
+    # We need to map indices back to scores.
+    # Just iterate carefully.
+    keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
+    final_boxes = pred_boxes[keep_indices]
+    final_scores = pred_scores[keep_indices]
+
+    for i, box in enumerate(final_boxes):
+        x1, y1, x2, y2 = box.tolist()
+        score = float(final_scores[i])
+        final_preds.append(
+            [float(x1), float(y1), float(x2 - x1), float(y2 - y1), score]
+        )
+
+    return final_preds
 
 
 @register_pipeline("strategy_12")
@@ -150,7 +160,10 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
 
     logger.info(f"📂 Found {len(video_folders)} videos. Starting processing...")
     results_tracker = csv_utils.get_results_tracker()
-    total_tp, total_fp, total_fn, total_time, total_frames = 0, 0, 0, 0, 0
+    total_tp = total_fp = total_fn = total_time = total_frames = 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
@@ -158,8 +171,13 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         if not images:
             continue
 
-        vid_tp, vid_fp, vid_fn, n_frames = 0, 0, 0, len(images)
+        vid_tp = vid_fp = vid_fn = 0  # Re-initializing cleaner
+        n_frames = len(images)
         vid_start_time = time.time()
+
+        vid_dotd_list = []
+        vid_all_preds = []
+        vid_all_gts = []
 
         # --- PASS 1: Generate Predictions (including Interpolation) ---
         all_predictions = defaultdict(list)
@@ -244,6 +262,10 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
             key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
             gts = gt_data.get(key, [])
 
+            # Store for mAP calc
+            vid_all_preds.append(final_preds)
+            vid_all_gts.append(gts)
+
             img_tp, img_fp, matched_gt = 0, 0, set()
             img_ious = []
             for p_box in final_preds:
@@ -263,6 +285,7 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
                     img_tp += 1
                     matched_gt.add(best_idx)
                     img_ious.append(best_iou)
+                    vid_dotd_list.append(best_dist)
                 else:
                     img_fp += 1
 
@@ -298,6 +321,11 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
+
+        # Calculate mAP and DotD for video
+        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
         vis_utils.log_video_metrics(
             logger,
             video_name,
@@ -310,9 +338,17 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
                 "tp": vid_tp,
                 "fp": vid_fp,
                 "fn": vid_fn,
+                "iou": np.mean(img_ious) if img_ious else 0.0,  # Approximate avg IoU
+                "mAP": vid_map,
+                "dotd": vid_dotd,
                 "vid_time": vid_time,
+                "memory_usage_mb": 0.0,  # Not easily tracked here per video avg comfortably
             },
         )
+        total_map_sum += vid_map
+        total_dotd_sum += vid_dotd
+        total_videos_processed += 1
+
         total_time += vid_time
         total_frames += n_frames
         total_tp += vid_tp
@@ -328,6 +364,13 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         if (overall_prec + overall_rec) > 0
         else 0
     )
+    overall_map = (
+        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+    overall_dotd = (
+        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+
     summary_metrics = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
@@ -337,6 +380,8 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         "tp": total_tp,
         "fp": total_fp,
         "fn": total_fn,
+        "mAP": overall_map,
+        "dotd": overall_dotd,
         "processing_time_sec": total_time,
         "execution_time_sec": time.time() - start_time,
     }

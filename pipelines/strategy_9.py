@@ -90,6 +90,7 @@ class KalmanBoxTracker(object):
         self.hits = 0
         self.hit_streak = 0
         self.age = 0
+        self.score = bbox[4] if len(bbox) > 4 else 0.0
 
     def update(self, bbox):
         self.time_since_update = 0
@@ -97,6 +98,8 @@ class KalmanBoxTracker(object):
         self.hits += 1
         self.hit_streak += 1
         self.kf.update(self.convert_bbox_to_z(bbox))
+        if len(bbox) > 4:
+            self.score = bbox[4]
 
     def predict(self):
         if (self.kf.x[6] + self.kf.x[2]) <= 0:
@@ -248,8 +251,11 @@ class SortDotDTracker:
             if (trk.time_since_update < 1) and (
                 trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits
             ):
-                # Return format: [x, y, w, h] (converting back from x1,y1,x2,y2)
-                ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))
+                # Return format: [x, y, w, h, id, score]
+                # Note: original code returned [x,y,w,h,id]
+                ret.append(
+                    np.concatenate((d, [trk.id + 1], [trk.score])).reshape(1, -1)
+                )
             i -= 1
             # Remove dead tracks
             if trk.time_since_update > self.max_age:
@@ -260,7 +266,22 @@ class SortDotDTracker:
             final_res = []
             for r in ret:
                 r = r[0]
-                final_res.append([r[0], r[1], r[2] - r[0], r[3] - r[1]])
+                # r is [x,y,s,r, id, score]
+                # convert to [x,y,w,h, score]
+                # Wait, convert_x_to_bbox returns [x1,y1,x2,y2].
+                # d above was trk.get_state()[0] which is [x1,y1,x2,y2].
+
+                # So r[0-3] is x1,y1,x2,y2
+                # r[4] is id
+                # r[5] is score
+
+                # We typically return [x,y,w,h] for VIS evaluation?
+                # vis_utils metrics expect [x,y,w,h,score]
+
+                x1, y1, x2, y2 = r[0], r[1], r[2], r[3]
+                score = r[5] if len(r) > 5 else 1.0
+
+                final_res.append([x1, y1, x2 - x1, y2 - y1, score])
             return final_res
 
         return []
@@ -374,6 +395,9 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
     tracker = csv_utils.get_results_tracker()
 
     total_tp = total_fp = total_fn = total_time = total_frames = 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
     results_data = []
 
     for video_path in video_folders:
@@ -383,6 +407,10 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
             continue
 
         vid_tp = vid_fp = vid_fn = 0
+        vid_dotd_list = []
+        vid_all_preds = []
+        vid_all_gts = []
+
         vid_start = time.time()
         n_frames = len(images)
 
@@ -460,6 +488,11 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
             # --- EVALUATION ---
             key = f"{video_name}/{os.path.basename(img_path)}"
             gts = gt_data.get(key, [])
+
+            # Store for mAP calc
+            vid_all_preds.append(final_preds)
+            vid_all_gts.append(gts)
+
             matched_gt = set()
 
             img_tp = img_fp = 0
@@ -476,9 +509,14 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
                         best_idx = idx
 
                 if best_dist <= 30:
-                    vid_tp += 1
-                    img_tp += 1
-                    matched_gt.add(best_idx)
+                    if best_iou > 0:
+                        vid_tp += 1
+                        img_tp += 1
+                        vid_dotd_list.append(best_dist)
+                        matched_gt.add(best_idx)
+                    else:
+                        vid_fp += 1
+                        img_fp += 1
                 else:
                     vid_fp += 1
                     img_fp += 1
@@ -495,7 +533,8 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
                 for g_idx, g_box in enumerate(gts):
                     if g_idx in matched_gt_indices:
                         continue
-                    iou = vis_utils.box_iou_xywh(p_box, g_box)
+                    # p_box is [x,y,w,h,score]
+                    iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                     if iou > best_iou:
                         best_iou = iou
                         best_idx = g_idx
@@ -547,6 +586,10 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
         vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
         vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
+        # Calculate mAP and DotD for video
+        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
         vis_utils.log_video_metrics(
             logger,
             video_name,
@@ -560,11 +603,16 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
                 "fp": vid_fp,
                 "fn": vid_fn,
                 "iou": vid_iou,
-                "mAP": 0.0,
+                "mAP": vid_map,
+                "dotd": vid_dotd,
                 "memory_usage_mb": vid_mem,
                 "vid_time": vid_time,
             },
         )
+
+        total_map_sum += vid_map
+        total_dotd_sum += vid_dotd
+        total_videos_processed += 1
 
         results_data.append(
             {
@@ -602,6 +650,13 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
     overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
     overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
+    overall_map = (
+        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+    overall_dotd = (
+        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+
     summary_metrics = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
@@ -612,7 +667,8 @@ def run_strategy_9_pipeline(config: Dict[str, Any]):
         "fp": total_fp,
         "fn": total_fn,
         "iou": overall_iou,
-        "mAP": 0.0,
+        "mAP": overall_map,
+        "dotd": overall_dotd,
         "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time,
         "execution_time_sec": time.time() - start_time,

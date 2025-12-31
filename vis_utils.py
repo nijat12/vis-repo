@@ -30,8 +30,10 @@ from scipy.optimize import linear_sum_assignment
 
 try:
     from sahi.predict import get_sliced_prediction
+    from sahi import AutoDetectionModel
 except ImportError:
     get_sliced_prediction = None
+    AutoDetectionModel = None
 
 
 # Suppress Torch/YOLO internal deprecation warnings
@@ -339,6 +341,101 @@ def calculate_center_distance(box1: List[float], box2: List[float]) -> float:
     return np.sqrt((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2)
 
 
+def calculate_avg_dotd(matches: List[float]) -> float:
+    """Calculates the average Dot Distance from a list of distances."""
+    if not matches:
+        return 0.0
+    return float(np.mean(matches))
+
+
+def calculate_video_map(
+    detections: List[List[Any]],
+    ground_truths: List[List[List[float]]],
+    iou_thresh: float = 0.5,
+) -> float:
+    """
+    Calculates mAP for a single video/class (assumes single class 'bird').
+
+    Args:
+        detections: List of detections for each frame. Each detection is [x, y, w, h, score].
+        ground_truths: List of ground truths for each frame. Each GT is [x, y, w, h].
+        iou_thresh: IoU threshold for a positive match.
+
+    Returns:
+        Average Precision (AP) for this video.
+    """
+    all_detections = []  # List of (score, frame_idx, box)
+    total_gt = 0
+
+    for frame_idx, (frame_dets, frame_gts) in enumerate(zip(detections, ground_truths)):
+        total_gt += len(frame_gts)
+        for det in frame_dets:
+            # Check if detection has score
+            if len(det) >= 5:
+                score = det[4]
+                box = det[:4]
+                all_detections.append((score, frame_idx, box))
+            else:
+                # Fallback if no score provided (should not happen after refactor)
+                all_detections.append((0.0, frame_idx, det[:4]))
+
+    if total_gt == 0:
+        return 0.0 if not all_detections else 0.0
+
+    # Sort by confidence descending
+    all_detections.sort(key=lambda x: x[0], reverse=True)
+
+    tp = np.zeros(len(all_detections))
+    fp = np.zeros(len(all_detections))
+
+    # Keep track of matched GTs to avoid double counting: set((frame_idx, gt_idx))
+    matched_gts = set()
+
+    for i, (score, frame_idx, pred_box) in enumerate(all_detections):
+        gts = ground_truths[frame_idx]
+        best_iou = 0.0
+        best_gt_idx = -1
+
+        for gt_idx, gt_box in enumerate(gts):
+            iou = box_iou_xywh(pred_box, gt_box)
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_idx = gt_idx
+
+        if best_iou >= iou_thresh:
+            if (frame_idx, best_gt_idx) not in matched_gts:
+                tp[i] = 1
+                matched_gts.add((frame_idx, best_gt_idx))
+            else:
+                fp[i] = 1
+        else:
+            fp[i] = 1
+
+    # Compute precision and recall
+    cumulative_tp = np.cumsum(tp)
+    cumulative_fp = np.cumsum(fp)
+
+    recalls = cumulative_tp / total_gt
+    precisions = cumulative_tp / (cumulative_tp + cumulative_fp + 1e-6)
+
+    # Compute AP (Area Under Curve) using 11-point interpolation or VOC style
+    # Here using standard integration
+    ap = 0.0
+    # Concatenate 0 and 1 endpoints
+    mrec = np.concatenate(([0.0], recalls, [1.0]))
+    mpre = np.concatenate(([0.0], precisions, [0.0]))
+
+    # Compute projection of max precision
+    for i in range(len(mpre) - 1, 0, -1):
+        mpre[i - 1] = max(mpre[i - 1], mpre[i])
+
+    # Integrate area under curve
+    i = np.where(mrec[1:] != mrec[:-1])[0]
+    ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
+
+    return float(ap)
+
+
 def get_memory_usage() -> float:
     """Returns current process memory usage in MB."""
     process = psutil.Process(os.getpid())
@@ -431,9 +528,29 @@ def get_sahi_predictions(
     # SAHI expects images in RGB format
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
+    detection_model = model
+    # Auto-wrap Ultralytics YOLO model if it hasn't been wrapped yet
+    if AutoDetectionModel is not None:
+        # Check if it has perform_inference (SAHI specific)
+        if not hasattr(model, "perform_inference"):
+            # Use a cached wrapper if we made one previously to avoid re-init overhead
+            if not hasattr(model, "_sahi_wrapper"):
+                try:
+                    # 'yolov8' model_type works for Ultralytics YOLOv8/v11/v12
+                    model._sahi_wrapper = AutoDetectionModel.from_pretrained(
+                        model_type="yolov8",
+                        model=model,
+                        confidence_threshold=config.get("conf_thresh", 0.25),
+                        device="cpu",  # Assume CPU for this environment
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to wrap YOLO model for SAHI: {e}")
+                    return []
+            detection_model = model._sahi_wrapper
+
     result = get_sliced_prediction(
         image_rgb,
-        model,
+        detection_model,
         slice_height=config.get("slice_height", 640),
         slice_width=config.get("slice_width", 640),
         overlap_height_ratio=config.get("overlap_height_ratio", 0.2),
@@ -447,12 +564,16 @@ def get_sahi_predictions(
     final_preds = []
     for pred in result.object_prediction_list:
         if pred.category.id in config["model_classes"]:
-            final_preds.append(pred.bbox.to_xywh())
+            box = pred.bbox.to_xywh()
+            score = pred.score.value
+            final_preds.append(box + [score])
 
     return final_preds
 
 
-def linear_interpolate_box(box1: List[float], box2: List[float], t: float) -> List[float]:
+def linear_interpolate_box(
+    box1: List[float], box2: List[float], t: float
+) -> List[float]:
     """Linearly interpolate between two bounding boxes [x, y, w, h]."""
     return [b1 * (1 - t) + b2 * t for b1, b2 in zip(box1, box2)]
 
@@ -472,7 +593,7 @@ def generate_interpolated_boxes(
         return interpolated_results
 
     # Create a cost matrix based on center distance
-    cost_matrix = np.full((len(last_preds), len(current_preds)), float('inf'))
+    cost_matrix = np.full((len(last_preds), len(current_preds)), float("inf"))
     for r, box1 in enumerate(last_preds):
         for c, box2 in enumerate(current_preds):
             dist = calculate_center_distance(box1, box2)
@@ -480,8 +601,8 @@ def generate_interpolated_boxes(
 
     # Match boxes using the Hungarian algorithm
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    
-    max_dist = config.get('interpolation_max_dist', 200)
+
+    max_dist = config.get("interpolation_max_dist", 200)
     frame_interval = current_frame_idx - last_frame_idx
 
     for r, c in zip(row_ind, col_ind):
@@ -489,14 +610,14 @@ def generate_interpolated_boxes(
         if cost_matrix[r, c] < max_dist:
             start_box = last_preds[r]
             end_box = current_preds[c]
-            
+
             # Generate boxes for all intermediate frames
             for j in range(1, frame_interval):
                 inter_frame_idx = last_frame_idx + j
                 t = j / float(frame_interval)
                 inter_box = linear_interpolate_box(start_box, end_box, t)
                 interpolated_results[inter_frame_idx].append(inter_box)
-                
+
     return interpolated_results
 
 
@@ -517,7 +638,13 @@ class ObjectTracker:
         if len(self.tracks) == 0:
             for det in detections:
                 self.tracks.append(
-                    {"id": self.next_id, "box": det, "hits": 1, "skipped": 0}
+                    {
+                        "id": self.next_id,
+                        "box": det[:4],
+                        "score": det[4] if len(det) > 4 else 1.0,
+                        "hits": 1,
+                        "skipped": 0,
+                    }
                 )
                 self.next_id += 1
         else:
@@ -527,14 +654,19 @@ class ObjectTracker:
                 for i, det in enumerate(detections):
                     if i in matched:
                         continue
-                    dist = calculate_center_distance(track["box"], det)
+                    dist = calculate_center_distance(track["box"], det[:4])
                     if dist < best_dist and dist < self.dist_thresh:
                         best_dist, best_idx = dist, i
 
                 if best_idx != -1:
                     track.update(
                         {
-                            "box": detections[best_idx],
+                            "box": detections[best_idx][:4],
+                            "score": (
+                                detections[best_idx][4]
+                                if len(detections[best_idx]) > 4
+                                else track.get("score", 1.0)
+                            ),
                             "hits": track["hits"] + 1,
                             "skipped": 0,
                         }
@@ -546,14 +678,24 @@ class ObjectTracker:
             for i, det in enumerate(detections):
                 if i not in matched:
                     self.tracks.append(
-                        {"id": self.next_id, "box": det, "hits": 1, "skipped": 0}
+                        {
+                            "id": self.next_id,
+                            "box": det[:4],
+                            "score": det[4] if len(det) > 4 else 1.0,
+                            "hits": 1,
+                            "skipped": 0,
+                        }
                     )
                     self.next_id += 1
 
         self.tracks = [
             t for t in self.tracks if t["skipped"] <= self.max_frames_to_skip
         ]
-        return [t["box"] for t in self.tracks if t["hits"] >= self.min_hits]
+        return [
+            t["box"] + ([t["score"]] if "score" in t else [])
+            for t in self.tracks
+            if t["hits"] >= self.min_hits
+        ]
 
 
 def log_video_metrics(logger: logging.Logger, video_name: str, metrics: Dict[str, Any]):
@@ -573,6 +715,9 @@ def log_video_metrics(logger: logging.Logger, video_name: str, metrics: Dict[str
         ("fn", "FN"),
         ("iou", "IoU"),
         ("mAP", "mAP"),
+        ("iou", "IoU"),
+        ("mAP", "mAP"),
+        ("dotd", "DotD"),
         ("memory_usage_mb", "Memory (MB)"),
         ("vid_time", "Time"),
     ]
@@ -599,6 +744,9 @@ def log_pipeline_summary(
     logger.info("=" * 50)
 
     for key, val in metrics.items():
+        if key in ["total_frames", "processing_time_sec"]:
+            continue
+
         label = key.replace("_", " ").title()
         if "time" in key.lower():
             time_str = str(datetime.timedelta(seconds=int(val)))
@@ -607,4 +755,17 @@ def log_pipeline_summary(
             logger.info(f"{label:<25}: {val:.4f}")
         else:
             logger.info(f"{label:<25}: {val}")
+
+    # Log computed averages (Step 5.3)
+    total_frames = metrics.get("total_frames", 0)
+    proc_time = metrics.get("processing_time_sec", 0)
+
+    if total_frames > 0:
+        avg_time_per_img = proc_time / total_frames
+        logger.info(f"{'Avg Time Per Image':<25}: {avg_time_per_img:.4f}s")
+
+    # Assume 1 second per video is too trivial, but good to have
+    # We don't have num_videos passed directly here usually, but if execution_time is total wall clock
+    # we can just rely on the specific metrics passed.
+
     logger.info("=" * 50 + "\n")

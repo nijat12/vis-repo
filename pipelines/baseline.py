@@ -63,9 +63,10 @@ def get_base_predictions(model, img, img_size, conf_thresh, classes):
             # Use cpu() and numpy() for consistent format
             xyxy_boxes = boxes.xyxy.cpu().numpy()
             for box in xyxy_boxes:
-                x1, y1, x2, y2 = box
+                x1, y1, x2, y2 = box[:4]
+                score = box[4] if len(box) > 4 else 0.0
                 final_preds.append(
-                    [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+                    [float(x1), float(y1), float(x2 - x1), float(y2 - y1), float(score)]
                 )
 
     return final_preds
@@ -159,20 +160,24 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
     pred_scores = torch.cat(all_scores, dim=0)
 
     if use_nms:
-        # Apply Global NMS (Necessary because we stitched tiles)
-        # We use a strict IoU threshold here to merge duplicates at tile boundaries
         keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
-        final_tensor = pred_boxes[keep_indices]
+        final_boxes = pred_boxes[keep_indices]
+        final_scores = pred_scores[keep_indices]
     else:
-        # Just use all boxes without NMS
-        final_tensor = pred_boxes
+        final_boxes = pred_boxes
+        final_scores = pred_scores
 
-    # Convert to xywh format [x, y, w, h]
     final_preds = []
-    final_tensor = final_tensor.numpy()  # Convert to numpy for list building
-    for box in final_tensor:
+    # Convert to standard list format [x, y, w, h, score] for downstream use
+    final_boxes_np = final_boxes.numpy()
+    final_scores_np = final_scores.numpy()
+
+    for i, box in enumerate(final_boxes_np):
         x1, y1, x2, y2 = box
-        final_preds.append([float(x1), float(y1), float(x2 - x1), float(y2 - y1)])
+        score = final_scores_np[i]
+        final_preds.append(
+            [float(x1), float(y1), float(x2 - x1), float(y2 - y1), float(score)]
+        )
 
     return final_preds
 
@@ -256,6 +261,9 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
     tracker = csv_utils.get_results_tracker()
 
     total_tp = total_fp = total_fn = total_time_sec = total_frames = 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
     results_data = []
 
     for v_idx, video_path in enumerate(video_folders):
@@ -265,6 +273,10 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
             continue
 
         vid_tp = vid_fp = vid_fn = 0
+        vid_dotd_list = []
+        vid_all_preds = []  # For mAP
+        vid_all_gts = []  # For mAP
+
         vid_start = time.time()
         n_frames = len(images)
 
@@ -300,13 +312,19 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
             # Track per-image results
             img_tp = img_fp = 0
             matched_gt = set()
+
+            # Store for mAP calc
+            vid_all_preds.append(preds)
+            vid_all_gts.append(gts)
+
             for p_box in preds:
                 best_dist = 10000
                 best_idx = -1
                 for g_idx, g_box in enumerate(gts):
                     if g_idx in matched_gt:
                         continue
-                    d = vis_utils.calculate_center_distance(p_box, g_box)
+                    # p_box is now [x, y, w, h, score]
+                    d = vis_utils.calculate_center_distance(p_box[:4], g_box)
                     if d < best_dist:
                         best_dist = d
                         best_idx = g_idx
@@ -314,6 +332,7 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
                 if best_dist <= 30:
                     vid_tp += 1
                     img_tp += 1
+                    vid_dotd_list.append(best_dist)
                     matched_gt.add(best_idx)
                 else:
                     vid_fp += 1
@@ -331,7 +350,7 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
                 for g_idx, g_box in enumerate(gts):
                     if g_idx in matched_gt_indices:
                         continue
-                    iou = vis_utils.box_iou_xywh(p_box, g_box)
+                    iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                     if iou > best_iou:
                         best_iou = iou
                         best_idx = g_idx
@@ -375,6 +394,8 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
         total_tp += vid_tp
         total_fp += vid_fp
         total_fn += vid_fn
+        total_videos_processed += 1
+        # mAP and DotD sums updated below after calculation
 
         prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
@@ -390,6 +411,18 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
         vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
         vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
+        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
+        total_map_sum += vid_map
+        total_dotd_sum += vid_dotd
+
+        # Calculate mAP and DotD for video
+        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
+        total_map_sum += vid_map
+        total_dotd_sum += vid_dotd
+
         vis_utils.log_video_metrics(
             logger,
             video_name,
@@ -403,7 +436,8 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
                 "fp": vid_fp,
                 "fn": vid_fn,
                 "iou": vid_iou,
-                "mAP": 0.0,
+                "mAP": vid_map,
+                "dotd": vid_dotd,
                 "memory_usage_mb": vid_mem,
                 "vid_time": vid_time,
             },
@@ -424,6 +458,13 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
     overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
     overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
+    overall_map = (
+        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+    overall_dotd = (
+        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+
     # Prepare summary metrics
     summary_metrics = {
         "total_frames": total_frames,
@@ -435,7 +476,8 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
         "fp": total_fp,
         "fn": total_fn,
         "iou": overall_iou,
-        "mAP": 0.0,
+        "mAP": overall_map,
+        "dotd": overall_dotd,
         "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time_sec,
         "execution_time_sec": time.time() - start_time,
