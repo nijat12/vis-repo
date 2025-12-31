@@ -92,10 +92,10 @@ class Config:
     # SAHI CONFIG
     # ==========================================
     SAHI_CONFIG: Dict[str, Any] = {
-        "slice_height": 640,
-        "slice_width": 640,
-        "overlap_height_ratio": 0.2,
-        "overlap_width_ratio": 0.2,
+        "sahi_slice_height": 640,
+        "sahi_slice_width": 640,
+        "sahi_overlap_height_ratio": 0.2,
+        "sahi_overlap_width_ratio": 0.2,
     }
 
     # ==========================================
