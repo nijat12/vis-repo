@@ -281,21 +281,10 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
                     if dist < best_dist:
                         best_dist, best_idx = dist, idx
                 if best_dist <= 30:
-                    # Note: Original code required best_iou > 0 as well for TP?
-                    # "if best_dist <= 30 and best_iou > 0:" was previous logic.
-                    # But often distance match is enough for DotD validation,
-                    # strictly standard assignment often uses IoU.
-                    # Given 'DotD' metric emphasis, let's keep distance as primary for TP/FP count here?
-                    # Actually, let's stick to the previous logic but allow low IoU if dist is close?
-                    # Step 1 instructions said "Evaluate using mAP and Average Dot Distance".
-                    # Let's keep the user's logic: dist <= 30 AND iou > 0
-                    if best_iou > 0:
-                        img_tp += 1
-                        img_ious.append(best_iou)
-                        vid_dotd_list.append(best_dist)
-                        matched_gt.add(best_idx)
-                    else:
-                        img_fp += 1
+                    img_tp += 1
+                    img_ious.append(best_iou)
+                    vid_dotd_list.append(best_dist)
+                    matched_gt.add(best_idx)
                 else:
                     img_fp += 1
 

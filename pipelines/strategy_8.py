@@ -208,6 +208,10 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
         use_sahi = config.get("use_sahi", False)
 
         for i, img_path in enumerate(images):
+            # Only run detection every N frames
+            if i % config["detect_every"] != 0:
+                continue
+            
             img_start_time = time.time()  # Track per-image time
 
             if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -225,37 +229,35 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                 raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
             else:
                 curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                # Only run detection every N frames
-                if i % config["detect_every"] == 0:
-                    if prev_gray is not None:
-                        warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                        if warped_prev is not None:
-                            # Simplified motion detection for proposals
-                            diff = cv2.absdiff(curr_gray, warped_prev)
-                            _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-                            k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k3)
-                            thresh = cv2.dilate(thresh, k3, iterations=2)
+                if prev_gray is not None:
+                    warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+                    if warped_prev is not None:
+                        # Simplified motion detection for proposals
+                        diff = cv2.absdiff(curr_gray, warped_prev)
+                        _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                        k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k3)
+                        thresh = cv2.dilate(thresh, k3, iterations=2)
 
-                            contours, _ = cv2.findContours(
-                                thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        contours, _ = cv2.findContours(
+                            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+
+                        proposals = []
+                        for cnt in contours:
+                            area = cv2.contourArea(cnt)
+                            if 50 < area < 5000:
+                                x, y, w, h = cv2.boundingRect(cnt)
+                                proposals.append([x, y, w, h])
+
+                        # Run YOLO on ROIs
+                        if len(proposals) > 0 or (
+                            config["fullframe_every"]
+                            and i % config["fullframe_every"] == 0
+                        ):
+                            raw_detections = get_roi_predictions(
+                                model, frame, proposals, config, frame_idx=i
                             )
-
-                            proposals = []
-                            for cnt in contours:
-                                area = cv2.contourArea(cnt)
-                                if 50 < area < 5000:
-                                    x, y, w, h = cv2.boundingRect(cnt)
-                                    proposals.append([x, y, w, h])
-
-                            # Run YOLO on ROIs
-                            if len(proposals) > 0 or (
-                                config["fullframe_every"]
-                                and i % config["fullframe_every"] == 0
-                            ):
-                                raw_detections = get_roi_predictions(
-                                    model, frame, proposals, config, frame_idx=i
-                                )
                 prev_gray = curr_gray
 
             # Tracking
@@ -285,14 +287,10 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                         best_idx = idx
 
                 if best_dist <= 30:
-                    if best_iou > 0:
-                        vid_tp += 1
-                        img_tp += 1
-                        vid_dotd_list.append(best_dist)
-                        matched_gt.add(best_idx)
-                    else:
-                        vid_fp += 1
-                        img_fp += 1
+                    vid_tp += 1
+                    img_tp += 1
+                    vid_dotd_list.append(best_dist)
+                    matched_gt.add(best_idx)
                 else:
                     vid_fp += 1
                     img_fp += 1

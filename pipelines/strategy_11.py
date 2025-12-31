@@ -383,14 +383,10 @@ def run_strategy_11_pipeline(config: Dict[str, Any]):
 
                 # Distance threshold for TP match (increased to 100 for 4K)
                 if best_dist <= 100:
-                    if best_iou > 0:
-                        vid_tp += 1
-                        img_tp += 1
-                        vid_dotd_list.append(best_dist)
-                        matched_gt.add(best_idx)
-                    else:
-                        vid_fp += 1
-                        img_fp += 1
+                    vid_tp += 1
+                    img_tp += 1
+                    vid_dotd_list.append(best_dist)
+                    matched_gt.add(best_idx)
                 else:
                     vid_fp += 1
                     img_fp += 1

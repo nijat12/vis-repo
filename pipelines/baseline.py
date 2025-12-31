@@ -413,9 +413,6 @@ def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: boo
 
         vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
 
-        total_map_sum += vid_map
-        total_dotd_sum += vid_dotd
-
         # Calculate mAP and DotD for video
         vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
         vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)

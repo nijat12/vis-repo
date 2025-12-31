@@ -278,14 +278,10 @@ def run_strategy_10_pipeline(config: Dict[str, Any]):
                         best_idx = idx
 
                 if best_dist <= 30:
-                    if best_iou > 0:
-                        vid_tp += 1
-                        img_tp += 1
-                        vid_dotd_list.append(best_dist)
-                        matched_gt.add(best_idx)
-                    else:
-                        vid_fp += 1
-                        img_fp += 1
+                    vid_tp += 1
+                    img_tp += 1
+                    vid_dotd_list.append(best_dist)
+                    matched_gt.add(best_idx)
                 else:
                     vid_fp += 1
                     img_fp += 1

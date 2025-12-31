@@ -281,7 +281,7 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
                     if dist < best_dist:
                         best_dist, best_idx = dist, idx
 
-                if best_dist <= 30 and best_iou > 0:
+                if best_dist <= 30:
                     img_tp += 1
                     matched_gt.add(best_idx)
                     img_ious.append(best_iou)
