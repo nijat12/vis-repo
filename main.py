@@ -10,6 +10,7 @@ import sys
 import time
 import logging
 import warnings
+import multiprocessing
 from multiprocessing import Pool, Queue, Manager
 from logging.handlers import QueueListener
 from typing import Dict, Any, List
@@ -205,6 +206,10 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
 def main():
     """Main execution function."""
     try:
+        # Set multiprocessing start method to 'spawn' for PyTorch fork-safety
+        # This must be done at the entry point of the application
+        multiprocessing.set_start_method('spawn', force=True)
+        
         # Setup logging
         vis_utils.setup_logging()
         logger.info("VIS PIPELINE - STARTING")
@@ -263,7 +268,7 @@ def main():
                         f"❌ Pipeline {run_config['run_name']} failed: {e}",
                         exc_info=True,
                     )
-                    failed_pipelines.append(run_config["run_name"])
+                    failed_pipelines.append(run_config['run_name'])
                     all_pipeline_results.append(
                         {
                             "pipeline": run_config["run_name"],
