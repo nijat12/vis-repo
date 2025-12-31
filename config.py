@@ -221,7 +221,7 @@ class Config:
     # ==========================================
     # Number of CPU workers for parallel pipeline execution
     # Set to 1 for sequential execution
-    MAX_WORKERS: int = 1
+    MAX_WORKERS: int = os.cpu_count() or 1
 
     # ==========================================
     # VM KILLSWITCH
@@ -237,7 +237,7 @@ class Config:
     # ==========================================
     # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     LOG_LEVEL: str = "INFO"
-    LOG_PROCESSING_IMAGES_SKIP_COUNT: int = 5
+    LOG_PROCESSING_IMAGES_SKIP_COUNT: int = 20
 
     # Enable Google Cloud Logging (for VM execution)
     ENABLE_CLOUD_LOGGING: bool = True

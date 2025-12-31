@@ -10,7 +10,8 @@ import sys
 import time
 import logging
 import warnings
-from multiprocessing import Pool
+from multiprocessing import Pool, Queue, Manager
+from logging.handlers import QueueListener
 from typing import Dict, Any, List
 
 # Suppress Torch/YOLO internal deprecation warnings as early as possible
@@ -117,6 +118,31 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
     run_name = run_config["run_name"]
     base_pipeline = run_config["base_pipeline"]
 
+    # ==========================================
+    # OPTIMIZE THREADING FOR WORKER PROCESS
+    # ==========================================
+    # Prevent library-level threading to avoid thrashing when running many worker processes.
+    # We want 1 process PER CORE, not 1 process triggering 48 threads.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+    try:
+        import cv2
+
+        cv2.setNumThreads(1)
+    except ImportError:
+        pass
+
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+    except ImportError:
+        pass
+
     try:
         # Re-initialize logging with a unique file for this specific run
         log_filename = f"{run_name}.log"
@@ -141,7 +167,22 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
 
         # Get and run the pipeline function, passing the final config
         pipeline_func = get_pipeline(base_pipeline)
-        results = pipeline_func(final_config)
+
+        # Start QueueListener for intra-pipeline worker logs
+        log_queue = final_config.get("log_queue")
+        root_logger = logging.getLogger()
+        queue_listener = None
+        if log_queue:
+            queue_listener = QueueListener(
+                log_queue, *root_logger.handlers, respect_handler_level=True
+            )
+            queue_listener.start()
+
+        try:
+            results = pipeline_func(final_config)
+        finally:
+            if queue_listener:
+                queue_listener.stop()
 
         execution_time = time.time() - start_time
         results["execution_time_sec"] = execution_time
@@ -191,35 +232,67 @@ def main():
         # Download data
         vis_utils.check_and_download_data_with_error_handling()
 
-        # Determine number of workers
-        num_workers = min(Config.MAX_WORKERS, len(all_run_configs))
+        # Determine number of workers for intra-pipeline parallelism
+        # pipelines will now use Config.MAX_WORKERS for their own internal parallelism
         logger.info(
-            f"⚙️  Parallel execution: {num_workers} workers for {len(all_run_configs)} pipeline runs."
+            f"⚙️  Pipeline Execution: Sequential pipelines, {Config.MAX_WORKERS} workers per pipeline."
         )
 
-        # Execute pipelines
-        logger.info("EXECUTING PIPELINES")
+        # --- EXECUTION LOOP ---
+        logger.info("EXECUTING PIPELINES SEQUENTIALLY")
         overall_start = time.time()
 
-        if num_workers > 1:
-            with Pool(processes=num_workers) as pool:
-                results = pool.map(run_single_pipeline, all_run_configs)
-        else:
-            # Sequential execution for easier debugging
-            results = [run_single_pipeline(cfg) for cfg in all_run_configs]
+        # Setup Centralized Logging Queue
+        # This allows workers to send logs safely to the main process
+        manager = Manager()
+        log_queue = manager.Queue()
 
+        failed_pipelines = []
+        all_pipeline_results = []
+
+        try:
+            for run_config in all_run_configs:
+                # Inject log_queue into config for workers
+                run_config["log_queue"] = log_queue
+                try:
+                    results = run_single_pipeline(run_config)
+                    all_pipeline_results.append(results)
+
+                except Exception as e:
+                    logger.error(
+                        f"❌ Pipeline {run_config['run_name']} failed: {e}",
+                        exc_info=True,
+                    )
+                    failed_pipelines.append(run_config["run_name"])
+                    all_pipeline_results.append(
+                        {
+                            "pipeline": run_config["run_name"],
+                            "status": "failed",
+                            "error": str(e),
+                            "execution_time_sec": 0,
+                        }
+                    )
+        finally:
+            manager.shutdown()
+
+        if failed_pipelines:
+            logger.error(
+                f"❌ {len(failed_pipelines)} pipelines failed: {failed_pipelines}"
+            )
+            sys.exit(1)
+
+        logger.info("✅ All pipelines completed successfully.")
         overall_time = time.time() - overall_start
 
         # Log results summary
         logger.info("PIPELINE EXECUTION SUMMARY")
         logger.info(f"Total execution time: {overall_time:.2f} seconds")
 
-        failed_runs = [r for r in results if r.get("status") == "failed"]
         logger.info(
-            f"Pipelines completed: {len(results) - len(failed_runs)}/{len(results)}"
+            f"Pipelines completed: {len(all_run_configs) - len(failed_pipelines)}/{len(all_run_configs)}"
         )
 
-        for result in results:
+        for result in all_pipeline_results:
             pipeline = result.get("pipeline", "unknown")
             status = result.get("status", "completed")
             exec_time = result.get("execution_time_sec", 0)

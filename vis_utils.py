@@ -82,9 +82,7 @@ def setup_logging(log_name: Optional[str] = None):
     # File handler
     file_handler = logging.FileHandler(log_path, mode="w")
     file_handler.setLevel(logging.DEBUG)  # Log everything to file
-    file_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    file_formatter = logging.Formatter("%(name)45s - %(message)s")
     file_handler.setFormatter(file_formatter)
     root_logger.addHandler(file_handler)
 
@@ -113,6 +111,43 @@ def setup_logging(log_name: Optional[str] = None):
             )
         except Exception as e:
             root_logger.warning(f"⚠️  Could not setup Google Cloud Logging: {e}")
+
+    return root_logger
+
+
+def setup_worker_logging(log_queue: Optional[Any] = None):
+    """
+    Configures logging for a worker process.
+    If log_queue is provided, uses QueueHandler to send logs to main process.
+    Otherwise, configures stdout logging.
+
+    Args:
+        log_queue: Multiprocessing Queue to send logs to.
+    """
+    root_logger = logging.getLogger()
+
+    # Avoid adding multiple handlers if the worker is reused
+    if root_logger.hasHandlers():
+        return root_logger
+
+    root_logger.setLevel(getattr(logging, Config.LOG_LEVEL))
+
+    if log_queue:
+        try:
+            from logging.handlers import QueueHandler
+
+            queue_handler = QueueHandler(log_queue)
+            queue_handler.setLevel(logging.DEBUG)  # Send everything to main
+            root_logger.addHandler(queue_handler)
+        except Exception as e:
+            print(f"Failed to setup QueueHandler: {e}")
+    else:
+        # Fallback to console logging if no queue is provided
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter("%(name)45s - %(message)s")
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
 
     return root_logger
 

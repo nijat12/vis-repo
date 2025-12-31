@@ -7,6 +7,6 @@ train.json
 logs/
 metrics/*
 private_*
-# todo.md
+todo.md
 runtime_config.json
 .venv

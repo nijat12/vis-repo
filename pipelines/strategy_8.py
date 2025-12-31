@@ -14,7 +14,8 @@ import time
 import datetime
 import sys
 import logging
-from typing import Dict, Any
+import concurrent.futures
+from typing import Dict, Any, List
 
 import cv2
 import torch
@@ -134,101 +135,78 @@ def get_roi_predictions(
     return final_preds
 
 
-@register_pipeline("strategy_8")
-def run_strategy_8_pipeline(config: Dict[str, Any]):
-    """Execute Strategy 8 pipeline with YOLO on ROIs."""
-    pipeline_name = config["run_name"]
-    logger = logging.getLogger(f"pipelines.{pipeline_name}")
-    logger.info(f"--- STARTING STRATEGY 8: {pipeline_name} ---")
+_WORKER_MODEL = None
 
-    # Check dependencies
-    if YOLO is None:
-        logger.error(
-            "❌ ultralytics library not found. Please run: pip install ultralytics"
-        )
-        raise ImportError("ultralytics library missing")
 
-    # Load model
-    logger.info(f"⏳ Loading Model: {config['model_name']}...")
-    try:
-        model = YOLO(config["model_name"])
-        logger.info(f"✅ Model {config['model_name']} Loaded.")
-    except Exception as e:
-        logger.error(f"❌ Model Load Error: {e}")
-        raise
+def load_worker_model(model_name):
+    global _WORKER_MODEL
+    if _WORKER_MODEL is None:
+        _WORKER_MODEL = YOLO(model_name)
+    return _WORKER_MODEL
 
-    gt_data = vis_utils.load_json_ground_truth(Config.LOCAL_JSON_PATH)
-    if not gt_data:
-        raise RuntimeError("Failed to load ground truth data")
 
-    start_time = time.time()
+def process_video_worker(args):
+    """
+    Worker function to process a single video for Strategy 8.
+    """
+    video_path, config, gt_data = args
+    # Configure logging for worker process
+    vis_utils.setup_worker_logging(config.get("log_queue"))
+    logger = logging.getLogger(config["run_name"])
 
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
-    video_folders = [f for f in video_folders if os.path.isdir(f)]
+    model = load_worker_model(config["model_name"])
 
-    if Config.SHOULD_LIMIT_VIDEO:
-        if Config.SHOULD_LIMIT_VIDEO == 1:
-            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
-        else:
-            video_folders = video_folders[
-                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
-            ]
+    video_name = os.path.basename(video_path)
+    images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
+    if not images:
+        return None
 
-    if not video_folders:
-        raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
+    vid_tp = vid_fp = vid_fn = 0
+    vid_dotd_list = []
+    vid_all_preds = []
+    vid_all_gts = []
+    image_results = []
 
-    logger.info(f"📂 Found {len(video_folders)} videos. Starting...")
+    vid_start = time.time()
+    n_frames = len(images)
+    prev_gray = None
+    obj_tracker = vis_utils.ObjectTracker(
+        dist_thresh=50, max_frames_to_skip=4, min_hits=2
+    )
+    use_sahi = config.get("use_sahi", False)
 
-    # Initialize results tracker
-    tracker = csv_utils.get_results_tracker()
+    for i, img_path in enumerate(images):
+        img_start_time = time.time()
 
-    total_tp = total_fp = total_fn = total_time = total_frames = 0
-    total_map_sum = 0.0
-    total_dotd_sum = 0.0
-    total_videos_processed = 0
-    results_data = []
+        if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
+            percent = ((i + 1) / n_frames) * 100
+            logger.info(
+                f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+            )
 
-    for video_path in video_folders:
-        video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
-        if not images:
-            continue
+        frame = cv2.imread(img_path)
+        if frame is None:
+            # Create an empty image_result for a missing frame
+            image_results.append(csv_utils.create_image_result(
+                video_name=video_name,
+                frame_name=os.path.basename(img_path),
+                image_path=img_path,
+                predictions=[], ground_truths=[],
+                tp=0, fp=0, fn=0,
+                processing_time_sec=(time.time() - img_start_time),
+                iou=0.0, memory_usage_mb=vis_utils.get_memory_usage()
+            ))
+            continue # skip to next image
 
-        vid_tp = vid_fp = vid_fn = 0
-        vid_dotd_list = []
-        vid_all_preds = []
-        vid_all_gts = []
+        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        raw_detections = []
+        frame_was_detected = False # Flag to track if detection was attempted for this frame
 
-        vid_start = time.time()
-        n_frames = len(images)
-        prev_gray = None
-        obj_tracker = vis_utils.ObjectTracker(
-            dist_thresh=50, max_frames_to_skip=4, min_hits=2
-        )
-        use_sahi = config.get("use_sahi", False)
-
-        for i, img_path in enumerate(images):
-            # Only run detection every N frames
-            if i % config["detect_every"] != 0:
-                continue
-            
-            img_start_time = time.time()  # Track per-image time
-
-            if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
-                percent = ((i + 1) / n_frames) * 100
-                logger.info(
-                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
-                )
-
-            frame = cv2.imread(img_path)
-            if frame is None:
-                continue
-
-            raw_detections = []
+        if i % config["detect_every"] == 0: # Only run detection logic on "detect_every" frames
+            frame_was_detected = True
             if use_sahi:
                 raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
             else:
-                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 if prev_gray is not None:
                     warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
                     if warped_prev is not None:
@@ -252,28 +230,37 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
 
                         # Run YOLO on ROIs
                         if len(proposals) > 0 or (
-                            config["fullframe_every"]
-                            and i % config["fullframe_every"] == 0
+                            config["fullframe_every"] and i % config["fullframe_every"] == 0
                         ):
                             raw_detections = get_roi_predictions(
                                 model, frame, proposals, config, frame_idx=i
                             )
-                prev_gray = curr_gray
+        prev_gray = curr_gray # Always update prev_gray for motion compensation
 
-            # Tracking
-            final_preds = obj_tracker.update(raw_detections)
+        # Tracking
+        # The tracker is updated regardless, so it can maintain internal state.
+        # However, for metric calculation for skipped frames, we set final_preds explicitly to []
+        # to ensure no FNs are counted if no detection was intended.
+        tracker_output_for_frame = obj_tracker.update(raw_detections)
 
-            # Evaluation
-            key = f"{video_name}/{os.path.basename(img_path)}"
-            gts = gt_data.get(key, [])  # Should be list of [x,y,w,h]
-
-            # Store for mAP calc
+        # Evaluation
+        key = f"{video_name}/{os.path.basename(img_path)}"
+        gts = gt_data.get(key, []) # Get GTs for the current frame
+        
+        final_preds = []
+        img_tp = 0
+        img_fp = 0
+        img_fn = 0
+        img_avg_iou = 0.0
+        
+        if frame_was_detected: # This frame was chosen for detection
+            final_preds = tracker_output_for_frame # Use predictions from tracker
+            
+            # Store for mAP calc (only if detection was active)
             vid_all_preds.append(final_preds)
             vid_all_gts.append(gts)
 
             matched_gt = set()
-
-            img_tp = img_fp = 0
 
             for p_box in final_preds:
                 best_dist = 10000
@@ -307,7 +294,6 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                 for g_idx, g_box in enumerate(gts):
                     if g_idx in matched_gt_indices:
                         continue
-                    # p_box is [x,y,w,h,score]
                     iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                     if iou > best_iou:
                         best_iou = iou
@@ -317,97 +303,189 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                     matched_gt_indices.add(best_idx)
 
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
+        else: # This is a skipped frame, no detection was performed or intended for evaluation
+            # For skipped frames, we explicitly ensure metrics are zero.
+            # No predictions are "made" from the perspective of this pipeline.
+            final_preds = [] # No predictions for skipped frames
 
-            # Calculate processing time and memory for this image
-            img_processing_time = time.time() - img_start_time
-            img_mem = vis_utils.get_memory_usage()
+            # Store for mAP calc. Even if no detections, we need a corresponding entry for GTs.
+            # If final_preds is empty, mAP calculation will naturally handle this.
+            vid_all_preds.append(final_preds) # Empty predictions for skipped frame
+            vid_all_gts.append(gts) # GTs exist, but won't contribute to TP/FP/FN for this frame.
+            
+            # Crucially, for skipped frames, no FNs are counted.
+            img_tp = 0 
+            img_fp = 0
+            img_fn = 0
+            # Note: vid_tp, vid_fp, vid_fn are not incremented for skipped frames.
+            # This aligns with the "don't count FNs for skipped frames" requirement.
 
-            # Save per-image result
-            image_result = csv_utils.create_image_result(
-                video_name=video_name,
-                frame_name=os.path.basename(img_path),
-                image_path=img_path,
-                predictions=final_preds,
-                ground_truths=gts,
-                tp=img_tp,
-                fp=img_fp,
-                fn=img_fn,
-                processing_time_sec=img_processing_time,
-                iou=img_avg_iou,
-                memory_usage_mb=img_mem,
-            )
-            tracker.add_image_result(pipeline_name, image_result)
+        # Calculate processing time and memory for this image
+        img_processing_time = time.time() - img_start_time
+        img_mem = vis_utils.get_memory_usage()
 
-            if (i + 1) % 50 == 0:
-                tracker.save_batch(pipeline_name, batch_size=50)
-
-        vid_time = time.time() - vid_start
-        fps = len(images) / vid_time if vid_time > 0 else 0
-        prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
-        rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
-        f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
-
-        # Log video metrics using standard utility
-        # Aggregate from detailed data for the video
-        p_data = [
-            d
-            for d in tracker.detailed_data.get(pipeline_name, [])
-            if d["video"] == video_name
-        ]
-        vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
-        vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
-
-        # Calculate mAP and DotD for video
-        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
-        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
-
-        vis_utils.log_video_metrics(
-            logger,
-            video_name,
-            {
-                "n_frames": len(images),
-                "fps": fps,
-                "precision": prec,
-                "recall": rec,
-                "f1_score": f1,
-                "tp": vid_tp,
-                "fp": vid_fp,
-                "fn": vid_fn,
-                "iou": vid_iou,
-                "mAP": vid_map,
-                "dotd": vid_dotd,
-                "memory_usage_mb": vid_mem,
-                "vid_time": vid_time,
-            },
+        image_result = csv_utils.create_image_result(
+            video_name=video_name,
+            frame_name=os.path.basename(img_path),
+            image_path=img_path,
+            predictions=final_preds,
+            ground_truths=gts,
+            tp=img_tp,
+            fp=img_fp,
+            fn=img_fn,
+            processing_time_sec=img_processing_time,
+            iou=img_avg_iou,
+            memory_usage_mb=img_mem,
         )
+        image_results.append(image_result)
 
-        total_map_sum += vid_map
-        total_dotd_sum += vid_dotd
-        total_videos_processed += 1
+    vid_time = time.time() - vid_start
+    # n_frames here still means total frames, which is correct.
+    # fps calculation uses n_frames and vid_time, which is good.
+    # Overall prec/rec/f1 uses accumulated vid_tp, vid_fp, vid_fn which is now correctly handled.
+    fps = n_frames / vid_time if vid_time > 0 else 0
+    prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
+    rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
+    f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
-        results_data.append(
-            {
-                "Video": video_name,
-                "Frames": len(images),
-                "FPS": round(fps, 2),
-                "Precision": round(prec, 4),
-                "Recall": round(rec, 4),
-                "F1": round(f1, 4),
-                "TP": vid_tp,
-                "FP": vid_fp,
-                "FN": vid_fn,
-                "IoU": round(vid_iou, 4),
-                "mAP": round(vid_map, 4),
-                "DotD": round(vid_dotd, 4),
-                "Memory (MB)": round(vid_mem, 4),
-                "Video_Time": vid_time,
-            }
+    # Calculate mAP and DotD for video
+    # vid_all_preds and vid_all_gts are populated for all frames, with predictions being empty for skipped ones.
+    vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+    vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
+    return {
+        "video_name": video_name,
+        "n_frames": n_frames,
+        "fps": fps,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1,
+        "tp": vid_tp,
+        "fp": vid_fp,
+        "fn": vid_fn,
+        "mAP": vid_map,
+        "dotd": vid_dotd,
+        "vid_time": vid_time,
+        "image_results": image_results,
+    }
+
+
+@register_pipeline("strategy_8")
+def run_strategy_8_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 8 pipeline with YOLO on ROIs."""
+    pipeline_name = config["run_name"]
+    logger = logging.getLogger(pipeline_name)
+    logger.info(f"--- STARTING STRATEGY 8 (PARALLEL): {pipeline_name} ---")
+
+    # Check dependencies
+    if YOLO is None:
+        logger.error(
+            "❌ ultralytics library not found. Please run: pip install ultralytics"
         )
-        total_time += vid_time
-        total_frames += len(images)
-        total_tp += vid_tp
-        total_fp += vid_fp
-        total_fn += vid_fn
+        raise ImportError("ultralytics library missing")
+
+    # Load model (check in main process)
+    logger.info(f"⏳ Loading Model: {config['model_name']}...")
+    try:
+        _ = YOLO(config["model_name"])
+    except Exception as e:
+        logger.error(f"❌ Model Load Error: {e}")
+        raise
+
+    gt_data = vis_utils.load_json_ground_truth(Config.LOCAL_JSON_PATH)
+    if not gt_data:
+        raise RuntimeError("Failed to load ground truth data")
+
+    start_time = time.time()
+
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
+    video_folders = [f for f in video_folders if os.path.isdir(f)]
+
+    if Config.SHOULD_LIMIT_VIDEO:
+        if Config.SHOULD_LIMIT_VIDEO == 1:
+            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
+        else:
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
+
+    if not video_folders:
+        raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
+
+    logger.info(
+        f"📂 Found {len(video_folders)} videos. Starting parallel processing with {Config.MAX_WORKERS} workers..."
+    )
+
+    # Initialize results tracker
+    tracker = csv_utils.get_results_tracker()
+
+    total_tp = total_fp = total_fn = total_time = total_frames = 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
+
+    worker_args = [(vf, config, gt_data) for vf in video_folders]
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=Config.MAX_WORKERS
+    ) as executor:
+        future_to_video = {
+            executor.submit(process_video_worker, args): args[0] for args in worker_args
+        }
+
+        for future in concurrent.futures.as_completed(future_to_video):
+            video_path = future_to_video[future]
+            video_name = os.path.basename(video_path)
+            try:
+                result = future.result()
+                if result is None:
+                    continue
+
+                vis_utils.log_video_metrics(
+                    logger,
+                    result["video_name"],
+                    {
+                        "n_frames": result["n_frames"],
+                        "fps": result["fps"],
+                        "precision": result["precision"],
+                        "recall": result["recall"],
+                        "f1_score": result["f1_score"],
+                        "tp": result["tp"],
+                        "fp": result["fp"],
+                        "fn": result["fn"],
+                        "mAP": result["mAP"],
+                        "dotd": result["dotd"],
+                        "vid_time": result["vid_time"],
+                        "iou": (
+                            np.mean([r["iou"] for r in result["image_results"]])
+                            if result["image_results"]
+                            else 0.0
+                        ),
+                        "memory_usage_mb": (
+                            np.mean(
+                                [r["memory_usage_mb"] for r in result["image_results"]]
+                            )
+                            if result["image_results"]
+                            else 0.0
+                        ),
+                    },
+                )
+
+                total_frames += result["n_frames"]
+                total_time += result["vid_time"]
+                total_tp += result["tp"]
+                total_fp += result["fp"]
+                total_fn += result["fn"]
+                total_map_sum += result["mAP"]
+                total_dotd_sum += result["dotd"]
+                total_videos_processed += 1
+
+                for img_res in result["image_results"]:
+                    tracker.add_image_result(pipeline_name, img_res)
+                tracker.save_batch(pipeline_name, batch_size=1)
+
+            except Exception as e:
+                logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
 
     # Calculate overall metrics
     avg_fps = total_frames / total_time if total_time > 0 else 0

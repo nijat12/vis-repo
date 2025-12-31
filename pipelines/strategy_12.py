@@ -12,13 +12,13 @@ import glob
 import time
 import datetime
 import logging
+from typing import Dict, Any, List
+from collections import defaultdict
 import cv2
 import torch
 import torchvision
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
-from collections import defaultdict
 
 try:
     from ultralytics import YOLO
@@ -118,19 +118,227 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, config: Dict[str, Any]):
     return final_preds
 
 
+_WORKER_MODEL = None
+
+
+def load_worker_model(model_name):
+    global _WORKER_MODEL
+    if _WORKER_MODEL is None:
+        _WORKER_MODEL = YOLO(model_name)
+    return _WORKER_MODEL
+
+
+def process_video_worker(args):
+    """
+    Worker function to process a single video for Strategy 12.
+    """
+    video_path, config, gt_data = args
+    vis_utils.setup_worker_logging(config.get("log_queue"))
+    logger = logging.getLogger(config["run_name"])
+
+    if YOLO is None:
+        raise ImportError("ultralytics library missing")
+
+    model = load_worker_model(config["model_name"])
+
+    video_name = os.path.basename(video_path)
+    images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
+    if not images:
+        return None
+
+    vid_start_time = time.time()
+    n_frames = len(images)
+
+    vid_dotd_list = []
+    vid_all_preds = []
+    vid_all_gts = []
+    image_results = []
+
+    vid_tp = vid_fp = vid_fn = 0
+
+    # --- PASS 1: Generate Predictions (including Interpolation) ---
+    all_predictions = defaultdict(list)
+    last_keyframe_preds: List[List[float]] = []
+    last_keyframe_idx = -1
+    prev_gray = None
+    detect_every = config.get("detect_every", 5)
+    use_sahi = config.get("use_sahi", False)
+
+    images_w_metadata = [
+        {
+            "img_start_time": time.time(),
+            "image": image,
+        }
+        for image in images
+    ]
+
+    for i, img_metadata in enumerate(images_w_metadata):
+        img_metadata["img_start_time"] = time.time()
+        if i % detect_every == 0:
+
+            if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
+                percent = ((i + 1) / n_frames) * 100
+                logger.info(
+                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+                )
+
+            frame = cv2.imread(img_metadata["image"])
+            if frame is None:
+                continue
+
+            current_preds = []
+            if use_sahi:
+                current_preds = vis_utils.get_sahi_predictions(model, frame, config)
+            else:
+                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                proposals = []
+                if prev_gray is not None:
+                    warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+                    if warped_prev is not None:
+                        diff = cv2.absdiff(curr_gray, warped_prev)
+                        mean, std = cv2.meanStdDev(diff)
+                        dynamic_thresh = (
+                            mean[0][0] + config["dynamic_multiplier"] * std[0][0]
+                        )
+                        final_thresh = max(
+                            config["min_threshold"],
+                            min(config["max_threshold"], dynamic_thresh),
+                        )
+                        _, thresh = cv2.threshold(
+                            diff, final_thresh, 255, cv2.THRESH_BINARY
+                        )
+                        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+                        thresh = cv2.dilate(thresh, kernel, iterations=1)
+                        contours, _ = cv2.findContours(
+                            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+                        h_img, w_img = curr_gray.shape
+                        for cnt in contours:
+                            area = cv2.contourArea(cnt)
+                            if 50 < area < 5000:
+                                x, y, w, h = cv2.boundingRect(cnt)
+                                if 0.2 < (w / h if h > 0 else 0) < 4.0:
+                                    proposals.append([x, y, w, h])
+                if proposals:
+                    current_preds = get_roi_predictions(model, frame, proposals, config)
+                prev_gray = curr_gray
+
+            all_predictions[i] = current_preds
+
+            if last_keyframe_idx != -1:
+                interpolated = vis_utils.generate_interpolated_boxes(
+                    last_keyframe_preds, current_preds, last_keyframe_idx, i, config
+                )
+                for frame_idx, boxes in interpolated.items():
+                    all_predictions[frame_idx].extend(boxes)
+
+            last_keyframe_preds = current_preds
+            last_keyframe_idx = i
+
+    # --- PASS 2: Evaluation ---
+    for i, img_metadata in enumerate(images_w_metadata):
+        final_preds = all_predictions[i]
+        key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
+        gts = gt_data.get(key, [])
+
+        # Store for mAP calc
+        vid_all_preds.append(final_preds)
+        vid_all_gts.append(gts)
+
+        img_tp = img_fp = 0
+        matched_gt = set()
+        img_ious = []
+
+        for p_box in final_preds:
+            best_dist, best_idx = float("inf"), -1
+            best_iou = 0
+            for idx, g_box in enumerate(gts):
+                if idx in matched_gt:
+                    continue
+                dist = vis_utils.calculate_center_distance(p_box, g_box)
+                iou = vis_utils.box_iou_xywh(p_box, g_box)
+                if iou > best_iou:
+                    best_iou = iou
+                if dist < best_dist:
+                    best_dist, best_idx = dist, idx
+
+            if best_dist <= 30:
+                img_tp += 1
+                matched_gt.add(best_idx)
+                img_ious.append(best_iou)
+                vid_dotd_list.append(best_dist)
+            else:
+                img_fp += 1
+
+        img_fn = len(gts) - len(matched_gt)
+        vid_tp += img_tp
+        vid_fp += img_fp
+        vid_fn += img_fn
+
+        img_avg_iou = np.mean(img_ious) if img_ious else 0.0
+
+        img_processing_time = time.time() - img_metadata["img_start_time"]
+        img_mem = vis_utils.get_memory_usage()
+
+        # Log per-image results
+        image_result = csv_utils.create_image_result(
+            video_name=video_name,
+            frame_name=os.path.basename(img_metadata["image"]),
+            image_path=img_metadata["image"],
+            predictions=final_preds,
+            ground_truths=gts,
+            tp=img_tp,
+            fp=img_fp,
+            fn=img_fn,
+            processing_time_sec=img_processing_time,
+            iou=img_avg_iou,
+            memory_usage_mb=img_mem,
+        )
+        image_results.append(image_result)
+
+    # Video-level stats
+    vid_time = time.time() - vid_start_time
+    prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
+    rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
+    f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
+
+    # Calculate mAP and DotD for video
+    vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
+    vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
+
+    return {
+        "video_name": video_name,
+        "n_frames": n_frames,
+        "fps": n_frames / vid_time if vid_time > 0 else 0,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1,
+        "tp": vid_tp,
+        "fp": vid_fp,
+        "fn": vid_fn,
+        "iou": np.mean([r["iou"] for r in image_results]) if image_results else 0.0,
+        "mAP": vid_map,
+        "dotd": vid_dotd,
+        "vid_time": vid_time,
+        "image_results": image_results,
+    }
+
+
 @register_pipeline("strategy_12")
 def run_strategy_12_pipeline(config: Dict[str, Any]):
     """Execute Strategy 12: GMC + Frame Skipping + Interpolation."""
     pipeline_name = config["run_name"]
-    logger = logging.getLogger(f"pipelines.{pipeline_name}")
-    logger.info(f"--- STARTING STRATEGY 12: {pipeline_name} ---")
+    logger = logging.getLogger(pipeline_name)
+    logger.info(f"--- STARTING STRATEGY 12 (PARALLEL): {pipeline_name} ---")
 
     if YOLO is None:
         raise ImportError("❌ ultralytics library not found.")
 
     logger.info(f"⏳ Loading YOLO Model: {config['model_name']}...")
     try:
-        model = YOLO(config["model_name"])
+        # Check model in main process
+        _ = YOLO(config["model_name"])
     except Exception as e:
         logger.error(f"❌ Model Load Error: {e}", exc_info=True)
         raise
@@ -140,219 +348,91 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         raise RuntimeError("Failed to load ground truth data")
 
     start_time = time.time()
-    video_folders = sorted(
-        [
-            f
-            for f in glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*"))
-            if os.path.isdir(f)
-        ]
-    )
+
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
+    video_folders = [f for f in video_folders if os.path.isdir(f)]
 
     if Config.SHOULD_LIMIT_VIDEO:
         if Config.SHOULD_LIMIT_VIDEO == 1:
-            video_folders = [
-                video_folders[i] for i in Config.VIDEO_INDEXES if i < len(video_folders)
-            ]
+            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
         else:
             video_folders = video_folders[
                 : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
             ]
 
-    logger.info(f"📂 Found {len(video_folders)} videos. Starting processing...")
+    if not video_folders:
+        raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
+
+    logger.info(
+        f"📂 Found {len(video_folders)} videos. Starting parallel processing with {Config.MAX_WORKERS} workers..."
+    )
+
     results_tracker = csv_utils.get_results_tracker()
     total_tp = total_fp = total_fn = total_time = total_frames = 0
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
 
-    for video_path in video_folders:
-        video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
-        if not images:
-            continue
+    worker_args = [(vf, config, gt_data) for vf in video_folders]
 
-        vid_tp = vid_fp = vid_fn = 0  # Re-initializing cleaner
-        n_frames = len(images)
-        vid_start_time = time.time()
+    import concurrent.futures
 
-        vid_dotd_list = []
-        vid_all_preds = []
-        vid_all_gts = []
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=Config.MAX_WORKERS
+    ) as executor:
+        future_to_video = {
+            executor.submit(process_video_worker, args): args[0] for args in worker_args
+        }
 
-        # --- PASS 1: Generate Predictions (including Interpolation) ---
-        all_predictions = defaultdict(list)
-        last_keyframe_preds: List[List[float]] = []
-        last_keyframe_idx = -1
-        prev_gray = None
-        detect_every = config.get("detect_every", 5)
-        use_sahi = config.get("use_sahi", False)
-
-        images_w_metadata = [
-            {
-                "img_start_time": time.time(),
-                "image": image,
-            }
-            for image in images
-        ]
-
-        for i, img_metadata in enumerate(images_w_metadata):
-            img_metadata["img_start_time"] = time.time()
-            if i % detect_every == 0:
-                frame = cv2.imread(img_metadata["image"])
-                if frame is None:
+        for future in concurrent.futures.as_completed(future_to_video):
+            video_path = future_to_video[future]
+            video_name = os.path.basename(video_path)
+            try:
+                result = future.result()
+                if result is None:
                     continue
 
-                current_preds = []
-                if use_sahi:
-                    current_preds = vis_utils.get_sahi_predictions(model, frame, config)
-                else:
-                    curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    proposals = []
-                    if prev_gray is not None:
-                        warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                        if warped_prev is not None:
-                            diff = cv2.absdiff(curr_gray, warped_prev)
-                            mean, std = cv2.meanStdDev(diff)
-                            dynamic_thresh = (
-                                mean[0][0] + config["dynamic_multiplier"] * std[0][0]
+                vis_utils.log_video_metrics(
+                    logger,
+                    result["video_name"],
+                    {
+                        "n_frames": result["n_frames"],
+                        "fps": result["fps"],
+                        "precision": result["precision"],
+                        "recall": result["recall"],
+                        "f1_score": result["f1_score"],
+                        "tp": result["tp"],
+                        "fp": result["fp"],
+                        "fn": result["fn"],
+                        "mAP": result["mAP"],
+                        "dotd": result["dotd"],
+                        "vid_time": result["vid_time"],
+                        "iou": result["iou"],
+                        "memory_usage_mb": (
+                            np.mean(
+                                [r["memory_usage_mb"] for r in result["image_results"]]
                             )
-                            final_thresh = max(
-                                config["min_threshold"],
-                                min(config["max_threshold"], dynamic_thresh),
-                            )
-                            _, thresh = cv2.threshold(
-                                diff, final_thresh, 255, cv2.THRESH_BINARY
-                            )
-                            kernel = cv2.getStructuringElement(
-                                cv2.MORPH_ELLIPSE, (5, 5)
-                            )
-                            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-                            thresh = cv2.dilate(thresh, kernel, iterations=1)
-                            contours, _ = cv2.findContours(
-                                thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                            )
-                            h_img, w_img = curr_gray.shape
-                            for cnt in contours:
-                                area = cv2.contourArea(cnt)
-                                if 50 < area < 5000:
-                                    x, y, w, h = cv2.boundingRect(cnt)
-                                    if 0.2 < (w / h if h > 0 else 0) < 4.0:
-                                        proposals.append([x, y, w, h])
-                    if proposals:
-                        current_preds = get_roi_predictions(
-                            model, frame, proposals, config
-                        )
-                    prev_gray = curr_gray
+                            if result["image_results"]
+                            else 0.0
+                        ),
+                    },
+                )
 
-                all_predictions[i] = current_preds
+                total_frames += result["n_frames"]
+                total_time += result["vid_time"]
+                total_tp += result["tp"]
+                total_fp += result["fp"]
+                total_fn += result["fn"]
+                total_map_sum += result["mAP"]
+                total_dotd_sum += result["dotd"]
+                total_videos_processed += 1
 
-                if last_keyframe_idx != -1:
-                    interpolated = vis_utils.generate_interpolated_boxes(
-                        last_keyframe_preds, current_preds, last_keyframe_idx, i, config
-                    )
-                    for frame_idx, boxes in interpolated.items():
-                        all_predictions[frame_idx].extend(boxes)
+                for img_res in result["image_results"]:
+                    results_tracker.add_image_result(pipeline_name, img_res)
+                results_tracker.save_batch(pipeline_name, batch_size=1)
 
-                last_keyframe_preds = current_preds
-                last_keyframe_idx = i
-
-        # --- PASS 2: Evaluation ---
-        for i, img_metadata in enumerate(images_w_metadata):
-            final_preds = all_predictions[i]
-            key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
-            gts = gt_data.get(key, [])
-
-            # Store for mAP calc
-            vid_all_preds.append(final_preds)
-            vid_all_gts.append(gts)
-
-            img_tp, img_fp, matched_gt = 0, 0, set()
-            img_ious = []
-            for p_box in final_preds:
-                best_dist, best_idx = float("inf"), -1
-                best_iou = 0
-                for idx, g_box in enumerate(gts):
-                    if idx in matched_gt:
-                        continue
-                    dist = vis_utils.calculate_center_distance(p_box, g_box)
-                    iou = vis_utils.box_iou_xywh(p_box, g_box)
-                    if iou > best_iou:
-                        best_iou = iou
-                    if dist < best_dist:
-                        best_dist, best_idx = dist, idx
-
-                if best_dist <= 30:
-                    img_tp += 1
-                    matched_gt.add(best_idx)
-                    img_ious.append(best_iou)
-                    vid_dotd_list.append(best_dist)
-                else:
-                    img_fp += 1
-
-            img_fn = len(gts) - len(matched_gt)
-            vid_tp += img_tp
-            vid_fp += img_fp
-            vid_fn += img_fn
-
-            img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-
-            img_processing_time = time.time() - img_metadata["img_start_time"]
-            img_mem = vis_utils.get_memory_usage()
-
-            # Log per-image results
-            image_result = csv_utils.create_image_result(
-                video_name=video_name,
-                frame_name=os.path.basename(img_metadata["image"]),
-                image_path=img_metadata["image"],
-                predictions=final_preds,
-                ground_truths=gts,
-                tp=img_tp,
-                fp=img_fp,
-                fn=img_fn,
-                processing_time_sec=img_processing_time,
-                iou=img_avg_iou,
-                memory_usage_mb=img_mem,
-            )
-            results_tracker.add_image_result(pipeline_name, image_result)
-
-        # Video-level stats
-        vid_time = time.time() - vid_start_time
-        prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
-        rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
-        f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
-
-        # Calculate mAP and DotD for video
-        vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
-        vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
-
-        vis_utils.log_video_metrics(
-            logger,
-            video_name,
-            {
-                "n_frames": n_frames,
-                "fps": n_frames / vid_time,
-                "precision": prec,
-                "recall": rec,
-                "f1_score": f1,
-                "tp": vid_tp,
-                "fp": vid_fp,
-                "fn": vid_fn,
-                "iou": np.mean(img_ious) if img_ious else 0.0,  # Approximate avg IoU
-                "mAP": vid_map,
-                "dotd": vid_dotd,
-                "vid_time": vid_time,
-                "memory_usage_mb": 0.0,  # Not easily tracked here per video avg comfortably
-            },
-        )
-        total_map_sum += vid_map
-        total_dotd_sum += vid_dotd
-        total_videos_processed += 1
-
-        total_time += vid_time
-        total_frames += n_frames
-        total_tp += vid_tp
-        total_fp += vid_fp
-        total_fn += vid_fn
+            except Exception as e:
+                logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
 
     # Final summary
     avg_fps = total_frames / total_time if total_time > 0 else 0
@@ -370,6 +450,11 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
     )
 
+    # Aggregate additional metrics from detailed data for summary
+    p_data = results_tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+
     summary_metrics = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
@@ -379,11 +464,14 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
         "tp": total_tp,
         "fp": total_fp,
         "fn": total_fn,
+        "iou": overall_iou,
         "mAP": overall_map,
         "dotd": overall_dotd,
+        "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time,
         "execution_time_sec": time.time() - start_time,
     }
+
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
     results_tracker.update_summary(pipeline_name, summary_metrics, config=config)
     return {"pipeline": pipeline_name, "status": "completed", **summary_metrics}
