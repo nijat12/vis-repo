@@ -330,8 +330,8 @@ def load_json_ground_truth(json_path: str) -> Dict:
 
 def calculate_center_distance(box1: List[float], box2: List[float]) -> float:
     """Calculate Euclidean distance between box centers (xywh format)."""
-    x1, y1, w1, h1 = box1
-    x2, y2, w2, h2 = box2
+    x1, y1, w1, h1 = box1[:4]
+    x2, y2, w2, h2 = box2[:4]
 
     cx1 = x1 + w1 / 2
     cy1 = y1 + h1 / 2
@@ -444,8 +444,8 @@ def get_memory_usage() -> float:
 
 def box_iou_xywh(box1: List[float], box2: List[float]) -> float:
     """Calculate IoU between two boxes in xywh format."""
-    x1, y1, w1, h1 = box1
-    x2, y2, w2, h2 = box2
+    x1, y1, w1, h1 = box1[:4]
+    x2, y2, w2, h2 = box2[:4]
 
     x1_max, y1_max = x1 + w1, y1 + h1
     x2_max, y2_max = x2 + w2, y2 + h2
@@ -575,7 +575,7 @@ def linear_interpolate_box(
     box1: List[float], box2: List[float], t: float
 ) -> List[float]:
     """Linearly interpolate between two bounding boxes [x, y, w, h]."""
-    return [b1 * (1 - t) + b2 * t for b1, b2 in zip(box1, box2)]
+    return [b1 * (1 - t) + b2 * t for b1, b2 in zip(box1[:4], box2[:4])]
 
 
 def generate_interpolated_boxes(
