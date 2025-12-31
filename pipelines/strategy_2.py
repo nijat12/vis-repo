@@ -199,7 +199,7 @@ def run_strategy_2_pipeline(config: Dict[str, Any]):
         for i, img_path in enumerate(images):
             img_start_time = time.time()
 
-            if i % 50 == 0:
+            if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
                 percent = ((i + 1) / n_frames) * 100
                 logger.info(
                     f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"

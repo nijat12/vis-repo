@@ -237,6 +237,7 @@ class Config:
     # ==========================================
     # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     LOG_LEVEL: str = "INFO"
+    LOG_PROCESSING_IMAGES_SKIP_COUNT: int = 5
 
     # Enable Google Cloud Logging (for VM execution)
     ENABLE_CLOUD_LOGGING: bool = True
