@@ -15,7 +15,7 @@ from typing import List, Dict, Any
 
 class Config:
     """Central configuration for VIS pipeline execution."""
-    
+
     # ==========================================
     # PIPELINE SELECTION
     # ==========================================
@@ -26,103 +26,110 @@ class Config:
         Allows enabling/disabling at runtime without restarting the process.
         """
         default_pipelines: List[str] = [
-            "baseline",      # YOLO with 4x3 tiled inference
-            "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
-            "strategy_7",  # Motion compensation + CNN verifier
+            "baseline_base",  # YOLO with 4x3 tiled inference
+            "baseline_w_tiling",  # YOLO with 4x3 tiled inference
+            "baseline_w_tiling_and_nms",  # YOLO with 4x3 tiled inference
+            # "strategy_2",    # GMC + Dynamic Thresholding + YOLO Refiner
+            # "strategy_7",  # Motion compensation + CNN verifier
             "strategy_8",  # YOLO on ROIs
-            "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
-            "strategy_10", # Motion Proposals + YOLO Classification
-            "strategy_11", # Strategy 8 + YOLO Classifier Filter
+            # "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
+            "strategy_10",  # Motion Proposals + YOLO Classification
+            "strategy_11",  # Strategy 8 + YOLO Classifier Filter
         ]
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
             try:
-                with open(runtime_config_path, 'r') as f:
+                with open(runtime_config_path, "r") as f:
                     data = json.load(f)
                     return data.get("ENABLED_PIPELINES", default_pipelines)
             except Exception as e:
                 print(f"⚠️  Error reading runtime_config.json: {e}")
-        
+
         return default_pipelines
-    
+
     # ==========================================
     # GCS CONFIGURATION
     # ==========================================
     # Service account key file path (relative to project root)
     SERVICE_ACCOUNT_KEY: str = "colab-upload-bot-key.json"
-    
+
     # GCS bucket and paths
     BUCKET_NAME: str = "vis-data-2025"
     GCS_TRAIN_ZIP: str = "trainxs.zip"
     GCS_JSON_URL: str = "train.json"
-    
+
     # Project Root
     PROJECT_ROOT: str = os.path.dirname(os.path.abspath(__file__))
-    
+
     # Local data paths
     LOCAL_BASE_DIR: str = os.path.join(PROJECT_ROOT, "data_local")
     LOCAL_TRAIN_DIR: str = os.path.join(LOCAL_BASE_DIR, "trainxs")
     LOCAL_JSON_PATH: str = os.path.join(PROJECT_ROOT, "train.json")
     LOCAL_ZIP_PATH: str = os.path.join(LOCAL_BASE_DIR, "trainxs.zip")
-    
+
     # ==========================================
     # PROCESSING PARAMETERS
     # ==========================================
+    # List of confidence thresholds to run for each pipeline
+    CONF_THRESHOLDS: List[float] = [0.01, 0.1, 0.2, 0.5]
+
     # Video selection
     # Set to 0 to process all videos
     # Set to N to process first N videos
     # Set to 1 and use VIDEO_INDEXES to select specific videos
-    SHOULD_LIMIT_VIDEO: int = 1
-    VIDEO_INDEXES: List[int] = [1,2,3]  # Only used if SHOULD_LIMIT_VIDEO == 1
-    
+    SHOULD_LIMIT_VIDEO: int = 100
+    VIDEO_INDEXES: List[int] = [1, 2, 3]  # Only used if SHOULD_LIMIT_VIDEO == 1
+
     # GPU/CPU settings
     IS_GPU_ALLOWED: bool = False  # Set to True if GPU is available
-    
+
     # Output directory for results
     OUTPUT_DIR: str = "./metrics"
-    
+
     UNIFIED_MODEL_NAME: str = "yolo12n.pt"
-    
+
+    # ==========================================
+    # SAHI CONFIG
+    # ==========================================
+    SAHI_CONFIG: Dict[str, Any] = {
+        "slice_height": 640,
+        "slice_width": 640,
+        "overlap_height_ratio": 0.2,
+        "overlap_width_ratio": 0.2,
+    }
+
     # ==========================================
     # BASELINE PIPELINE CONFIG
     # ==========================================
     BASELINE_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],  # Bird class only
     }
 
-    BASELINE_BASE_CONFIG: Dict[str, Any] = {
-        **BASELINE_CONFIG
-    }
+    BASELINE_BASE_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
 
-    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {
-        **BASELINE_CONFIG
-    }
+    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
 
-    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {
-        **BASELINE_CONFIG
-    }
-    
+    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
+
     # ==========================================
     # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLO)
     # ==========================================
     STRATEGY_2_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
         "model_classes": [14],
         "roi_scale": 3.0,
         "min_roi_size": 192,
         "max_rois": 5,
         "dynamic_multiplier": 4.0,  # Multiplier for StdDev in thresholding
-        "min_threshold": 20,       # Min clamp for dynamic threshold
-        "max_threshold": 80,       # Max clamp for dynamic threshold
-        "min_hits": 3,             # For persistence tracking
+        "min_threshold": 20,  # Min clamp for dynamic threshold
+        "max_threshold": 80,  # Max clamp for dynamic threshold
+        "min_hits": 3,  # For persistence tracking
     }
-    
+
     # ==========================================
     # STRATEGY 7 CONFIG
     # ==========================================
@@ -133,119 +140,136 @@ class Config:
         "min_keep": 2,
         "max_keep": 5,
     }
-    
+
     # ==========================================
     # STRATEGY 8 CONFIG
     # ==========================================
     STRATEGY_8_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],
         "roi_scale": 3.0,
-        "min_roi_size": 10,
-        "max_rois": 50,
+        "min_roi_size": 192,
+        "max_rois": 10,
         "fullframe_every": 0,  # 0 disables full-frame processing
-        "detect_every": 15,  # Run YOLO every N frames
+        "detect_every": 3,  # Run YOLO every N frames
     }
-    
+
     # ==========================================
     # STRATEGY 9 CONFIG (SAHI + YOLO + Kalman)
     # ==========================================
     STRATEGY_9_CONFIG: Dict[str, Any] = {
         "model_path": UNIFIED_MODEL_NAME,  # Using YOLO
-        "conf_thresh": 0.2,          # Confidence threshold (from diagram)
-        "slice_size": 640,           # Slice dimensions (from diagram)
-        "img_size": 640,             # Inference size
-        "overlap": 0.2,              # Overlap ratio (from diagram)
-        "bird_class_id": 14,         # YOLO Bird class ID
-        "tracker_dist_thresh": 50,   # Pixel distance for DotD association
-        "max_age": 15,               # Max frames to keep lost tracks
-        "min_hits": 2,               # Min hits to confirm track
+        "img_size": 640,  # Inference size
+        "bird_class_id": 14,  # YOLO Bird class ID
+        "tracker_dist_thresh": 50,  # Pixel distance for DotD association
+        "max_age": 15,  # Max frames to keep lost tracks
+        "min_hits": 2,  # Min hits to confirm track
     }
-    
+
     # ==========================================
     # STRATEGY 10 CONFIG (Motion + YOLO)
     # ==========================================
     STRATEGY_10_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
-        "conf_thresh": 0.01,
-        "motion_thresh_scale": 2.0,      # Multiplier for motion threshold (REDUCED from 4.0)
-        "motion_pixel_threshold": 5,     # Min pixels to trigger a tile (NEW)
-        "use_morphological_dilation": True, # Use dilation to expand motion (NEW)
-        "keyframe_interval": 15,         # Perform full scan every N frames, 0 to disable (NEW)
+        "motion_thresh_scale": 1.0,
+        "motion_pixel_threshold": 5,
+        "use_morphological_dilation": True,
+        "full_scan_interval": 10,
         "bird_class_id": 14,
     }
-    
+
     STRATEGY_11_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "classifier_model_name": "yolo11n-cls.pt",
         "img_size": 640,
         "cls_img_size": 224,
         "cls_scale2_size": 448,
-        "cls_overlap": 0.20,
-        "conf_thresh": 0.4,
-        "cls_conf_thresh": 0.8,
+        "cls_overlap": 0.2,
+        "cls_conf_thresh": 0.01,
         "iou_thresh": 0.45,
         "model_classes": [14],
         "roi_scale": 3.0,
-        "min_roi_size": 10,
-        "max_rois": 100,
+        "min_roi_size": 192,
+        "max_rois": 10,
         "fullframe_every": 0,
-        "detect_every": 5,
+        "detect_every": 3,
         "merge_dist": 150,
     }
-    
+
+    # ==========================================
+    # STRATEGY 12 CONFIG (GMC + Interpolation)
+    # ==========================================
+    STRATEGY_12_CONFIG: Dict[str, Any] = {
+        **STRATEGY_2_CONFIG,  # Inherits from Strategy 2
+        "detect_every": 5,
+    }
+
+    # ==========================================
+    # STRATEGY 13 CONFIG (Gated Funnel)
+    # ==========================================
+    STRATEGY_13_CONFIG: Dict[str, Any] = {
+        **STRATEGY_10_CONFIG,  # Inherits motion gating from Strat 10
+        **STRATEGY_11_CONFIG,  # Inherits classifier details from Strat 11
+        "use_interpolation": True,
+    }
+
     # ==========================================
     # PARALLEL EXECUTION
     # ==========================================
     # Number of CPU workers for parallel pipeline execution
     # Set to 1 for sequential execution
     MAX_WORKERS: int = 1
-    
+
     # ==========================================
     # VM KILLSWITCH
     # ==========================================
     # Automatically shutdown VM after pipeline completion
     ENABLE_KILLSWITCH: bool = True
-    
+
     # Delay before shutdown (seconds) - gives time to review logs
     KILLSWITCH_DELAY_SECONDS: int = 60
-    
+
     # ==========================================
     # LOGGING
     # ==========================================
     # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     LOG_LEVEL: str = "INFO"
-    
+
     # Enable Google Cloud Logging (for VM execution)
     ENABLE_CLOUD_LOGGING: bool = True
-    
+
     # Logging directory
     LOG_DIR: str = "logs"
-    
+
     # Local log file
     LOG_FILE: str = "main.log"
-    
+
     @classmethod
     def validate(cls) -> None:
         """Validate configuration and raise errors if invalid."""
         if not cls.get_runtime_pipelines():
-            raise ValueError("At least one pipeline must be enabled in runtime_config.json")
-        
+            raise ValueError(
+                "At least one pipeline must be enabled in runtime_config.json"
+            )
+
         if cls.SHOULD_LIMIT_VIDEO == 1 and not cls.VIDEO_INDEXES:
-            raise ValueError("VIDEO_INDEXES must be specified when SHOULD_LIMIT_VIDEO == 1")
-        
+            raise ValueError(
+                "VIDEO_INDEXES must be specified when SHOULD_LIMIT_VIDEO == 1"
+            )
+
         if cls.MAX_WORKERS < 1:
             raise ValueError("MAX_WORKERS must be at least 1")
-        
+
         # Check if service account key exists (if specified)
         if cls.SERVICE_ACCOUNT_KEY and not os.path.exists(cls.SERVICE_ACCOUNT_KEY):
-            print(f"⚠️  Warning: Service account key not found at {cls.SERVICE_ACCOUNT_KEY}")
+            print(
+                f"⚠️  Warning: Service account key not found at {cls.SERVICE_ACCOUNT_KEY}"
+            )
             print("    Will attempt to use VM default credentials")
-    
+
     @classmethod
     def get_runtime_killswitch(cls) -> bool:
         """
@@ -255,14 +279,13 @@ class Config:
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
             try:
-                with open(runtime_config_path, 'r') as f:
+                with open(runtime_config_path, "r") as f:
                     data = json.load(f)
                     return data.get("ENABLE_KILLSWITCH", cls.ENABLE_KILLSWITCH)
             except Exception as e:
                 print(f"⚠️  Error reading runtime_config.json: {e}")
-        
-        return cls.ENABLE_KILLSWITCH
 
+        return cls.ENABLE_KILLSWITCH
 
     @classmethod
     def get_pipeline_config(cls, pipeline_name: str) -> Dict[str, Any]:
@@ -270,7 +293,6 @@ class Config:
         Returns the configuration dictionary for a given pipeline name.
         """
         config_map = {
-            "baseline": cls.BASELINE_CONFIG,
             "baseline_base": cls.BASELINE_BASE_CONFIG,
             "baseline_w_tiling": cls.BASELINE_W_TILING_CONFIG,
             "baseline_w_tiling_and_nms": cls.BASELINE_W_TILING_AND_NMS_CONFIG,
@@ -280,7 +302,7 @@ class Config:
             "strategy_9": cls.STRATEGY_9_CONFIG,
             "strategy_10": cls.STRATEGY_10_CONFIG,
             "strategy_11": cls.STRATEGY_11_CONFIG,
+            "strategy_12": cls.STRATEGY_12_CONFIG,
+            "strategy_13": cls.STRATEGY_13_CONFIG,
         }
         return config_map.get(pipeline_name, {})
-
-

@@ -16,6 +16,7 @@ import sys
 import logging
 import math
 from collections import defaultdict
+from typing import Dict, Any
 
 import cv2
 import torch
@@ -38,20 +39,22 @@ from pipelines import register_pipeline
 def get_base_predictions(model, img, img_size, conf_thresh, classes):
     """
     Runs simple full-image inference using YOLO.
-    
+
     Args:
         model: YOLO model (ultralytics)
         img: Input image (BGR format)
         img_size: Target size for inference
         conf_thresh: Confidence threshold
         classes: List of class IDs to filter
-    
+
     Returns:
         List of predictions in [x, y, w, h] format
     """
     # YOLO Inference
-    results = model(img, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
-    
+    results = model(
+        img, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes
+    )
+
     final_preds = []
     if len(results) > 0:
         boxes = results[0].boxes
@@ -61,8 +64,10 @@ def get_base_predictions(model, img, img_size, conf_thresh, classes):
             xyxy_boxes = boxes.xyxy.cpu().numpy()
             for box in xyxy_boxes:
                 x1, y1, x2, y2 = box
-                final_preds.append([float(x1), float(y1), float(x2-x1), float(y2-y1)])
-                
+                final_preds.append(
+                    [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+                )
+
     return final_preds
 
 
@@ -70,7 +75,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
     """
     Splits image into a 6x4 Grid (24 tiles) and runs inference using YOLO.
     Optimization: Sends all tiles in BATCHES to maximize throughput.
-    
+
     Args:
         model: YOLO model (ultralytics)
         img: Input image (BGR format)
@@ -78,7 +83,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
         conf_thresh: Confidence threshold
         classes: List of class IDs to filter (e.g. [14])
         use_nms: Whether to apply global Non-Maximum Suppression
-    
+
     Returns:
         List of predictions in [x, y, w, h] format
     """
@@ -120,7 +125,9 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
 
         # YOLO Inference
         # verbose=False reduces log spam
-        results = model(sub_crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
+        results = model(
+            sub_crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes
+        )
 
         for j, res in enumerate(results):
             # Ultralytics results object
@@ -132,7 +139,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
                 local_scores = boxes.conf.cpu()
 
                 x_off, y_off = sub_offsets[j]
-                
+
                 # Shift crop coordinates back to full-frame
                 # Clone to avoid modifying the original if cached
                 shifted_boxes = local_boxes.clone()
@@ -140,7 +147,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
                 shifted_boxes[:, 1] += y_off
                 shifted_boxes[:, 2] += x_off
                 shifted_boxes[:, 3] += y_off
-                
+
                 all_boxes.append(shifted_boxes)
                 all_scores.append(local_scores)
 
@@ -150,7 +157,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
     # Merge all predictions
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
-    
+
     if use_nms:
         # Apply Global NMS (Necessary because we stitched tiles)
         # We use a strict IoU threshold here to merge duplicates at tile boundaries
@@ -162,52 +169,52 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
 
     # Convert to xywh format [x, y, w, h]
     final_preds = []
-    final_tensor = final_tensor.numpy() # Convert to numpy for list building
+    final_tensor = final_tensor.numpy()  # Convert to numpy for list building
     for box in final_tensor:
         x1, y1, x2, y2 = box
-        final_preds.append([float(x1), float(y1), float(x2-x1), float(y2-y1)])
+        final_preds.append([float(x1), float(y1), float(x2 - x1), float(y2 - y1)])
 
     return final_preds
 
 
-@register_pipeline("baseline")
-def run_all_baseline_variants():
-    """
-    Master orchestrator for all baseline variants.
-    Runs the base case, tiling only, and tiling+nms sequentially.
-    """
-    logger = logging.getLogger(__name__)
-    logger.info("🚀 STARTING ALL BASELINE VARIANTS")
-    
-    # 1. Base YOLO Inference
-    _run_baseline_variant("baseline_base", use_tiling=False, use_nms=False)
-    
-    # 2. Tiling only (no NMS)
-    _run_baseline_variant("baseline_w_tiling", use_tiling=True, use_nms=False)
-    
-    # 3. Full Baseline (Tiling + NMS)
-    results = _run_baseline_variant("baseline_w_tiling_and_nms", use_tiling=True, use_nms=True)
-    
-    return results
+@register_pipeline("baseline_base")
+def run_baseline_base(config: Dict[str, Any]):
+    """Runs the baseline variant with no tiling."""
+    return _run_baseline_variant(config, use_tiling=False, use_nms=False)
 
 
-def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
+@register_pipeline("baseline_w_tiling")
+def run_baseline_w_tiling(config: Dict[str, Any]):
+    """Runs the baseline variant with tiling but no NMS."""
+    return _run_baseline_variant(config, use_tiling=True, use_nms=False)
+
+
+@register_pipeline("baseline_w_tiling_and_nms")
+def run_baseline_w_tiling_and_nms(config: Dict[str, Any]):
+    """Runs the baseline variant with tiling and NMS."""
+    return _run_baseline_variant(config, use_tiling=True, use_nms=True)
+
+
+def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: bool):
     """
     Core logic for running a specific baseline variant.
     """
+    pipeline_name = config["run_name"]
     logger = logging.getLogger(f"pipelines.{pipeline_name}")
     logger.info(f"--- STARTING VARIANT: {pipeline_name} ---")
-    
-    # Load configuration
-    cfg = Config.get_pipeline_config(pipeline_name)
-    MODEL_NAME = cfg["model_name"]
-    IMG_SIZE = cfg["img_size"]
-    CONF_THRESH = cfg["conf_thresh"]
-    model_classes = cfg["model_classes"]
-    
+
+    # Load configuration from the passed dictionary
+    MODEL_NAME = config["model_name"]
+    IMG_SIZE = config["img_size"]
+    CONF_THRESH = config["conf_thresh"]
+    model_classes = config["model_classes"]
+    use_sahi = config.get("use_sahi", False)
+
     # Check dependencies
     if YOLO is None:
-        logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
+        logger.error(
+            "❌ ultralytics library not found. Please run: pip install ultralytics"
+        )
         raise ImportError("ultralytics library missing")
 
     # Load model
@@ -227,19 +234,23 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
     start_time = time.time()
 
     # Select videos to process
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, '*')))
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
     video_folders = [f for f in video_folders if os.path.isdir(f)]
-    
+
     if Config.SHOULD_LIMIT_VIDEO:
         if Config.SHOULD_LIMIT_VIDEO == 1:
             video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
         else:
-            video_folders = video_folders[:min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)]
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
 
-    logger.info(f"📂 Found {len(video_folders)} videos. Starting variant {pipeline_name}...")
+    logger.info(
+        f"📂 Found {len(video_folders)} videos. Starting variant {pipeline_name}..."
+    )
 
     # Initialize results tracker
     tracker = csv_utils.get_results_tracker()
@@ -249,7 +260,7 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
 
     for v_idx, video_path in enumerate(video_folders):
         video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, '*.jpg')))
+        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
         if not images:
             continue
 
@@ -259,20 +270,28 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()  # Track per-image time
-            
+
             if i % 20 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                logger.info(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                logger.info(
+                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+                )
 
             img = cv2.imread(img_path)
             if img is None:
                 continue
 
-            # Select prediction method
-            if use_tiling:
-                preds = get_tiled_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes, use_nms=use_nms)
+            # Select prediction method based on config
+            if use_sahi:
+                preds = vis_utils.get_sahi_predictions(model, img, config)
+            elif use_tiling:
+                preds = get_tiled_predictions(
+                    model, img, IMG_SIZE, CONF_THRESH, model_classes, use_nms=use_nms
+                )
             else:
-                preds = get_base_predictions(model, img, IMG_SIZE, CONF_THRESH, model_classes)
+                preds = get_base_predictions(
+                    model, img, IMG_SIZE, CONF_THRESH, model_classes
+                )
 
             img_filename = os.path.basename(img_path)
             key = f"{video_name}/{img_filename}"
@@ -299,10 +318,10 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
                 else:
                     vid_fp += 1
                     img_fp += 1
-            
+
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn
-            
+
             # Calculate IoU for matched pairs
             img_ious = []
             matched_gt_indices = set()
@@ -319,13 +338,13 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
                 if best_idx != -1 and best_iou > 0:
                     img_ious.append(best_iou)
                     matched_gt_indices.add(best_idx)
-            
+
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-            
+
             # Calculate processing time and memory for this image
             img_processing_time = time.time() - img_start_time
             img_mem = vis_utils.get_memory_usage()
-            
+
             # Save per-image result
             image_result = csv_utils.create_image_result(
                 video_name=video_name,
@@ -337,10 +356,12 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
                 fp=img_fp,
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
-                iou=img_avg_iou, mAP=0.0, memory_usage_mb=img_mem
+                iou=img_avg_iou,
+                mAP=0.0,
+                memory_usage_mb=img_mem,
             )
             tracker.add_image_result(pipeline_name, image_result)
-            
+
             # Save batch every 50 images
             if (i + 1) % 50 == 0:
                 tracker.save_batch(pipeline_name, batch_size=50)
@@ -361,35 +382,47 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
 
         # Log video metrics using standard utility
         # Aggregate from detailed data for the video
-        p_data = [d for d in tracker.detailed_data.get(pipeline_name, []) if d['video'] == video_name]
-        vid_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-        vid_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
-        
-        vis_utils.log_video_metrics(logger, video_name, {
-            'n_frames': n_frames,
-            'fps': vid_fps,
-            'precision': prec,
-            'recall': rec,
-            'f1_score': f1,
-            'tp': vid_tp,
-            'fp': vid_fp,
-            'fn': vid_fn,
-            'iou': vid_iou,
-            'mAP': 0.0,
-            'memory_usage_mb': vid_mem,
-            'vid_time': vid_time
-        })
+        p_data = [
+            d
+            for d in tracker.detailed_data.get(pipeline_name, [])
+            if d["video"] == video_name
+        ]
+        vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+        vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+
+        vis_utils.log_video_metrics(
+            logger,
+            video_name,
+            {
+                "n_frames": n_frames,
+                "fps": vid_fps,
+                "precision": prec,
+                "recall": rec,
+                "f1_score": f1,
+                "tp": vid_tp,
+                "fp": vid_fp,
+                "fn": vid_fn,
+                "iou": vid_iou,
+                "mAP": 0.0,
+                "memory_usage_mb": vid_mem,
+                "vid_time": vid_time,
+            },
+        )
 
     # Calculate overall metrics
     avg_fps = total_frames / total_time_sec if total_time_sec > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
+    overall_f1 = (
+        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
+        if (overall_prec + overall_rec) > 0
+        else 0
+    )
 
     # Aggregate additional metrics from detailed data
     p_data = tracker.detailed_data.get(pipeline_name, [])
-    overall_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
     # Prepare summary metrics
     summary_metrics = {
@@ -405,7 +438,7 @@ def _run_baseline_variant(pipeline_name: str, use_tiling: bool, use_nms: bool):
         "mAP": 0.0,
         "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time_sec,
-        "execution_time_sec": time.time() - start_time
+        "execution_time_sec": time.time() - start_time,
     }
 
     # Log summary using standard utility

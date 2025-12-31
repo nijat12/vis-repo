@@ -20,6 +20,7 @@ import torch
 import torchvision
 import numpy as np
 import pandas as pd
+from typing import Dict, Any
 
 try:
     from ultralytics import YOLO
@@ -48,7 +49,7 @@ def _expand_roi_xywh(box, w_img, h_img, scale=2.0, min_size=192):
     return x0, y0, x1, y1
 
 
-def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, classes, roi_scale, min_roi, max_rois):
+def get_roi_predictions(model, img_bgr, proposals_xywh, config: Dict[str, Any]):
     """Run YOLO only on ROI crops around proposals."""
     if model is None or not proposals_xywh:
         return []
@@ -58,10 +59,12 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
     offsets = []
 
     # Take top N proposals
-    use_props = proposals_xywh[:min(len(proposals_xywh), max_rois)]
+    use_props = proposals_xywh[: min(len(proposals_xywh), config["max_rois"])]
 
     for b in use_props:
-        x0, y0, x1, y1 = _expand_roi_xywh(b, w, h, scale=roi_scale, min_size=min_roi)
+        x0, y0, x1, y1 = _expand_roi_xywh(
+            b, w, h, scale=config["roi_scale"], min_size=config["min_roi_size"]
+        )
         crop = img_bgr[y0:y1, x0:x1]
         if crop.size == 0:
             continue
@@ -72,7 +75,13 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
         return []
 
     # Batch Inference
-    results = model(crops, imgsz=img_size, verbose=False, conf=conf_thresh, classes=classes)
+    results = model(
+        crops,
+        imgsz=config["img_size"],
+        verbose=False,
+        conf=config["conf_thresh"],
+        classes=config["model_classes"],
+    )
 
     all_boxes = []
     all_scores = []
@@ -83,13 +92,13 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
             local_boxes = boxes.xyxy.cpu()
             local_scores = boxes.conf.cpu()
             x_off, y_off = offsets[j]
-            
+
             shifted_boxes = local_boxes.clone()
             shifted_boxes[:, 0] += x_off
             shifted_boxes[:, 1] += y_off
             shifted_boxes[:, 2] += x_off
             shifted_boxes[:, 3] += y_off
-            
+
             all_boxes.append(shifted_boxes)
             all_scores.append(local_scores)
 
@@ -98,7 +107,7 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
 
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
-    
+
     keep = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
     final = pred_boxes[keep].numpy()
 
@@ -110,22 +119,22 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, img_size, conf_thresh, c
 
 
 @register_pipeline("strategy_2")
-def run_strategy_2_pipeline():
+def run_strategy_2_pipeline(config: Dict[str, Any]):
     """Execute Strategy 2 pipeline: GMC + Dynamic Threshold + YOLO Refiner."""
-    logger.info("=" * 70)
-    logger.info("STARTING STRATEGY 2 PIPELINE (GMC + Dynamic Thresholding + YOLO)")
-    logger.info("=" * 70)
-    
-    cfg = Config.STRATEGY_2_CONFIG
-    
+    pipeline_name = config["run_name"]
+    logger = logging.getLogger(f"pipelines.{pipeline_name}")
+    logger.info(f"--- STARTING STRATEGY 2: {pipeline_name} ---")
+
     if YOLO is None:
-        logger.error("❌ ultralytics library not found. Please run: pip install ultralytics")
+        logger.error(
+            "❌ ultralytics library not found. Please run: pip install ultralytics"
+        )
         raise ImportError("ultralytics library missing")
-    
-    logger.info(f"⏳ Loading YOLO Model: {cfg['model_name']}...")
+
+    logger.info(f"⏳ Loading YOLO Model: {config['model_name']}...")
     try:
-        model = YOLO(cfg['model_name'])
-        logger.info(f"✅ Model {cfg['model_name']} Loaded.")
+        model = YOLO(config["model_name"])
+        logger.info(f"✅ Model {config['model_name']} Loaded.")
     except Exception as e:
         logger.error(f"❌ Model Load Error: {e}")
         raise
@@ -136,19 +145,23 @@ def run_strategy_2_pipeline():
 
     start_time = time.time()
 
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, '*')))
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
     video_folders = [f for f in video_folders if os.path.isdir(f)]
-    
+
     if Config.SHOULD_LIMIT_VIDEO:
         if Config.SHOULD_LIMIT_VIDEO == 1:
             video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
         else:
-            video_folders = video_folders[:min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)]
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
 
-    logger.info(f"📂 Found {len(video_folders)} videos. Starting Strategy 2 processing...")
+    logger.info(
+        f"📂 Found {len(video_folders)} videos. Starting Strategy 2 processing..."
+    )
 
     # Initialize results tracker
     tracker = csv_utils.get_results_tracker()
@@ -158,7 +171,7 @@ def run_strategy_2_pipeline():
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, '*.jpg')))
+        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
         if not images:
             continue
 
@@ -166,66 +179,82 @@ def run_strategy_2_pipeline():
         vid_start = time.time()
         n_frames = len(images)
         prev_gray = None
-        # Persistence Tracking exactly as in Strategy 2 notebook (min_hits=3, dist_thresh=50)
-        obj_tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=5, min_hits=cfg['min_hits'])
+        obj_tracker = vis_utils.ObjectTracker(
+            dist_thresh=50, max_frames_to_skip=5, min_hits=config["min_hits"]
+        )
+        use_sahi = config.get("use_sahi", False)
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()
-            
+
             if i % 50 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                logger.info(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                logger.info(
+                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+                )
 
             frame = cv2.imread(img_path)
             if frame is None:
                 continue
-            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            h_img, w_img = curr_gray.shape
 
-            proposals = []
-            if prev_gray is not None:
-                # 1. GMC: Align frames
-                warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                if warped_prev is not None:
-                    # 2. Dynamic Thresholding (Notebook Logic)
-                    diff = cv2.absdiff(curr_gray, warped_prev)
-                    mean, std = cv2.meanStdDev(diff)
-                    # Threshold = Mean + 4 * Sigma
-                    dynamic_thresh = mean[0][0] + cfg['dynamic_multiplier'] * std[0][0]
-                    # Clamp threshold between 20 and 80
-                    final_thresh = max(cfg['min_threshold'], min(cfg['max_threshold'], dynamic_thresh))
-                    _, thresh = cv2.threshold(diff, final_thresh, 255, cv2.THRESH_BINARY)
-
-                    # 3. Morphological Opening (Notebook Logic)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-                    thresh = cv2.dilate(thresh, kernel, iterations=1)
-
-                    # 4. Contour Filtering (Notebook Logic)
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
-                        # Filter noise: 50 < Area < 5000
-                        if 50 < area < 5000:
-                            x, y, w, h = cv2.boundingRect(cnt)
-                            # Aspect Ratio Filter: 0.2 < W/H < 4.0
-                            aspect_ratio = float(w) / h
-                            if 0.2 < aspect_ratio < 4.0:
-                                # Border check: Ignore artifacts near edge
-                                border = 15
-                                if x > border and y > border and (x+w) < (w_img-border) and (y+h) < (h_img-border):
-                                    proposals.append([x, y, w, h])
-
-            # 5. YOLO ROI Refiner (The "Migration" to Deep Learning)
             raw_detections = []
-            if proposals:
-                raw_detections = get_roi_predictions(
-                    model, frame, proposals, cfg['img_size'], cfg['conf_thresh'], cfg['model_classes'],
-                    roi_scale=cfg['roi_scale'], min_roi=cfg['min_roi_size'], max_rois=cfg['max_rois']
-                )
+            if use_sahi:
+                raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
+            else:
+                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                h_img, w_img = curr_gray.shape
 
-            # Update for next frame
-            prev_gray = curr_gray
+                proposals = []
+                if prev_gray is not None:
+                    # 1. GMC: Align frames
+                    warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+                    if warped_prev is not None:
+                        # 2. Dynamic Thresholding (Notebook Logic)
+                        diff = cv2.absdiff(curr_gray, warped_prev)
+                        mean, std = cv2.meanStdDev(diff)
+                        dynamic_thresh = (
+                            mean[0][0] + config["dynamic_multiplier"] * std[0][0]
+                        )
+                        final_thresh = max(
+                            config["min_threshold"],
+                            min(config["max_threshold"], dynamic_thresh),
+                        )
+                        _, thresh = cv2.threshold(
+                            diff, final_thresh, 255, cv2.THRESH_BINARY
+                        )
+
+                        # 3. Morphological Opening (Notebook Logic)
+                        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+                        thresh = cv2.dilate(thresh, kernel, iterations=1)
+
+                        # 4. Contour Filtering (Notebook Logic)
+                        contours, _ = cv2.findContours(
+                            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+                        for cnt in contours:
+                            area = cv2.contourArea(cnt)
+                            if 50 < area < 5000:
+                                x, y, w, h = cv2.boundingRect(cnt)
+                                aspect_ratio = float(w) / h
+                                if 0.2 < aspect_ratio < 4.0:
+                                    border = 15
+                                    if (
+                                        x > border
+                                        and y > border
+                                        and (x + w) < (w_img - border)
+                                        and (y + h) < (h_img - border)
+                                    ):
+                                        proposals.append([x, y, w, h])
+
+                # 5. YOLO ROI Refiner
+                if proposals:
+                    raw_detections = get_roi_predictions(
+                        model, frame, proposals, config
+                    )
+
+                # Update for next frame
+                prev_gray = curr_gray
 
             # 6. Persistence Tracking
             final_preds = obj_tracker.update(raw_detections)
@@ -234,7 +263,7 @@ def run_strategy_2_pipeline():
             key = f"{video_name}/{os.path.basename(img_path)}"
             gts = gt_data.get(key, [])
             matched_gt = set()
-            
+
             img_tp = img_fp = 0
 
             for p_box in final_preds:
@@ -258,7 +287,7 @@ def run_strategy_2_pipeline():
 
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn
-            
+
             # Calculate IoU for matched pairs
             img_ious = []
             matched_gt_indices = set()
@@ -275,13 +304,13 @@ def run_strategy_2_pipeline():
                 if best_idx != -1 and best_iou > 0:
                     img_ious.append(best_iou)
                     matched_gt_indices.add(best_idx)
-            
+
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-            
+
             # Calculate processing time and memory for this image
             img_processing_time = time.time() - img_start_time
             img_mem = vis_utils.get_memory_usage()
-            
+
             # Log result
             image_result = csv_utils.create_image_result(
                 video_name=video_name,
@@ -293,12 +322,14 @@ def run_strategy_2_pipeline():
                 fp=img_fp,
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
-                iou=img_avg_iou, mAP=0.0, memory_usage_mb=img_mem
+                iou=img_avg_iou,
+                mAP=0.0,
+                memory_usage_mb=img_mem,
             )
-            tracker.add_image_result("strategy_2", image_result)
-            
+            tracker.add_image_result(pipeline_name, image_result)
+
             if (i + 1) % 50 == 0:
-                tracker.save_batch("strategy_2", batch_size=50)
+                tracker.save_batch(pipeline_name, batch_size=50)
 
         vid_time = time.time() - vid_start
         fps = len(images) / vid_time if vid_time > 0 else 0
@@ -308,30 +339,47 @@ def run_strategy_2_pipeline():
 
         # Log video metrics using standard utility
         # Aggregate from detailed data for the video
-        p_data = [d for d in tracker.detailed_data.get("strategy_2", []) if d['video'] == video_name]
-        vid_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-        vid_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+        p_data = [
+            d
+            for d in tracker.detailed_data.get(pipeline_name, [])
+            if d["video"] == video_name
+        ]
+        vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+        vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
-        vis_utils.log_video_metrics(logger, video_name, {
-            'n_frames': len(images),
-            'fps': fps,
-            'precision': prec,
-            'recall': rec,
-            'f1_score': f1,
-            'tp': vid_tp,
-            'fp': vid_fp,
-            'fn': vid_fn,
-            'iou': vid_iou,
-            'mAP': 0.0,
-            'memory_usage_mb': vid_mem,
-            'vid_time': vid_time
-        })
+        vis_utils.log_video_metrics(
+            logger,
+            video_name,
+            {
+                "n_frames": len(images),
+                "fps": fps,
+                "precision": prec,
+                "recall": rec,
+                "f1_score": f1,
+                "tp": vid_tp,
+                "fp": vid_fp,
+                "fn": vid_fn,
+                "iou": vid_iou,
+                "mAP": 0.0,
+                "memory_usage_mb": vid_mem,
+                "vid_time": vid_time,
+            },
+        )
 
-        results_data.append({
-            'Video': video_name, 'Frames': len(images), 'FPS': round(fps, 2),
-            'Precision': round(prec, 4), 'Recall': round(rec, 4), 'F1': round(f1, 4),
-            'TP': vid_tp, 'FP': vid_fp, 'FN': vid_fn, 'Video_Time': vid_time
-        })
+        results_data.append(
+            {
+                "Video": video_name,
+                "Frames": len(images),
+                "FPS": round(fps, 2),
+                "Precision": round(prec, 4),
+                "Recall": round(rec, 4),
+                "F1": round(f1, 4),
+                "TP": vid_tp,
+                "FP": vid_fp,
+                "FN": vid_fn,
+                "Video_Time": vid_time,
+            }
+        )
         total_time += vid_time
         total_frames += len(images)
         total_tp += vid_tp
@@ -342,12 +390,16 @@ def run_strategy_2_pipeline():
     avg_fps = total_frames / total_time if total_time > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
+    overall_f1 = (
+        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
+        if (overall_prec + overall_rec) > 0
+        else 0
+    )
 
     # Aggregate additional metrics from detailed data
-    p_data = tracker.detailed_data.get("strategy_2", [])
-    overall_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+    p_data = tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
     summary_metrics = {
         "total_frames": total_frames,
@@ -362,15 +414,15 @@ def run_strategy_2_pipeline():
         "mAP": 0.0,
         "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time,
-        "execution_time_sec": time.time() - start_time
+        "execution_time_sec": time.time() - start_time,
     }
 
     # Log summary using standard utility
-    vis_utils.log_pipeline_summary(logger, "strategy_2", summary_metrics)
-    tracker.update_summary("strategy_2", summary_metrics)
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
+    tracker.update_summary(pipeline_name, summary_metrics)
 
     return {
-        "pipeline": "strategy_2",
+        "pipeline": pipeline_name,
         "total_frames": total_frames,
         "avg_fps": avg_fps,
         "precision": overall_prec,

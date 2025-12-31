@@ -15,6 +15,7 @@ import time
 import datetime
 import sys
 import logging
+from typing import Dict, Any
 
 import cv2
 import torch
@@ -39,16 +40,59 @@ _strat7_categories = _STRAT7_WEIGHTS.meta["categories"]
 
 # Build bird class indices
 _bird_keywords = {
-    "bird","sparrow","finch","warbler","oriole","blackbird","robin","jay","magpie",
-    "eagle","hawk","falcon","vulture","owl","woodpecker","kingfisher","hummingbird",
-    "parrot","macaw","cockatoo","lorikeet","peacock","crane","heron","stork","flamingo",
-    "pelican","gull","tern","albatross","duck","goose","swan","chicken","hen","cock",
-    "rooster","turkey","ptarmigan","partridge","quail","ostrich","emu","kiwi"
+    "bird",
+    "sparrow",
+    "finch",
+    "warbler",
+    "oriole",
+    "blackbird",
+    "robin",
+    "jay",
+    "magpie",
+    "eagle",
+    "hawk",
+    "falcon",
+    "vulture",
+    "owl",
+    "woodpecker",
+    "kingfisher",
+    "hummingbird",
+    "parrot",
+    "macaw",
+    "cockatoo",
+    "lorikeet",
+    "peacock",
+    "crane",
+    "heron",
+    "stork",
+    "flamingo",
+    "pelican",
+    "gull",
+    "tern",
+    "albatross",
+    "duck",
+    "goose",
+    "swan",
+    "chicken",
+    "hen",
+    "cock",
+    "rooster",
+    "turkey",
+    "ptarmigan",
+    "partridge",
+    "quail",
+    "ostrich",
+    "emu",
+    "kiwi",
 }
 _exclude = {"kite"}
 _strat7_bird_indices = [
-    i for i, name in enumerate(_strat7_categories)
-    if (any(k in name.lower() for k in _bird_keywords) and not any(x in name.lower() for x in _exclude))
+    i
+    for i, name in enumerate(_strat7_categories)
+    if (
+        any(k in name.lower() for k in _bird_keywords)
+        and not any(x in name.lower() for x in _exclude)
+    )
 ]
 
 
@@ -113,28 +157,28 @@ def strat7_birdness_scores(frame_bgr, boxes_xywh, crop_scale):
 
 
 @register_pipeline("strategy_7")
-def run_strategy_7_pipeline():
+def run_strategy_7_pipeline(config: Dict[str, Any]):
     """Execute Strategy 7 pipeline with motion compensation and CNN verifier."""
-    logger.info("=" * 70)
-    logger.info("STARTING STRATEGY 7 PIPELINE (Motion Compensation + CNN Verifier)")
-    logger.info("=" * 70)
-    
-    cfg = Config.STRATEGY_7_CONFIG
-    
+    pipeline_name = config["run_name"]
+    logger = logging.getLogger(f"pipelines.{pipeline_name}")
+    logger.info(f"--- STARTING STRATEGY 7: {pipeline_name} ---")
+
     gt_data = vis_utils.load_json_ground_truth(Config.LOCAL_JSON_PATH)
     if not gt_data:
         raise RuntimeError("Failed to load ground truth data")
 
     start_time = time.time()
 
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, '*')))
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
     video_folders = [f for f in video_folders if os.path.isdir(f)]
-    
+
     if Config.SHOULD_LIMIT_VIDEO:
         if Config.SHOULD_LIMIT_VIDEO == 1:
             video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
         else:
-            video_folders = video_folders[:min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)]
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
@@ -149,7 +193,7 @@ def run_strategy_7_pipeline():
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, '*.jpg')))
+        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
         if not images:
             continue
 
@@ -157,14 +201,18 @@ def run_strategy_7_pipeline():
         vid_start = time.time()
         n_frames = len(images)
         prev_gray = None
-        obj_tracker = vis_utils.ObjectTracker(dist_thresh=50, max_frames_to_skip=2, min_hits=2)
+        obj_tracker = vis_utils.ObjectTracker(
+            dist_thresh=50, max_frames_to_skip=2, min_hits=2
+        )
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()  # Track per-image time
-            
+
             if i % 50 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                logger.info(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                logger.info(
+                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+                )
 
             frame = cv2.imread(img_path)
             if frame is None:
@@ -188,20 +236,33 @@ def run_strategy_7_pipeline():
                     t_high = max(15.0, min(85.0, t_high))
 
                     _, mask_low = cv2.threshold(diff_hp, t_low, 255, cv2.THRESH_BINARY)
-                    _, mask_high = cv2.threshold(diff_hp, t_high, 255, cv2.THRESH_BINARY)
+                    _, mask_high = cv2.threshold(
+                        diff_hp, t_high, 255, cv2.THRESH_BINARY
+                    )
 
                     # Optical flow
                     h_img, w_img = curr_gray.shape
                     scale = 0.33
-                    small_size = (max(64, int(w_img * scale)), max(64, int(h_img * scale)))
-                    prev_s = cv2.resize(warped_prev, small_size, interpolation=cv2.INTER_AREA)
-                    curr_s = cv2.resize(curr_gray, small_size, interpolation=cv2.INTER_AREA)
+                    small_size = (
+                        max(64, int(w_img * scale)),
+                        max(64, int(h_img * scale)),
+                    )
+                    prev_s = cv2.resize(
+                        warped_prev, small_size, interpolation=cv2.INTER_AREA
+                    )
+                    curr_s = cv2.resize(
+                        curr_gray, small_size, interpolation=cv2.INTER_AREA
+                    )
 
-                    flow = cv2.calcOpticalFlowFarneback(prev_s, curr_s, None, 0.5, 2, 15, 2, 5, 1.2, 0)
+                    flow = cv2.calcOpticalFlowFarneback(
+                        prev_s, curr_s, None, 0.5, 2, 15, 2, 5, 1.2, 0
+                    )
                     mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
                     t_mag = max(0.20, float(np.percentile(mag, 85)))
                     flow_mask_s = (mag > t_mag).astype(np.uint8) * 255
-                    flow_mask = cv2.resize(flow_mask_s, (w_img, h_img), interpolation=cv2.INTER_NEAREST)
+                    flow_mask = cv2.resize(
+                        flow_mask_s, (w_img, h_img), interpolation=cv2.INTER_NEAREST
+                    )
 
                     # DoG blob detection
                     g1 = cv2.GaussianBlur(curr_gray, (0, 0), 1.0)
@@ -211,13 +272,18 @@ def run_strategy_7_pipeline():
                     _, dog_mask = cv2.threshold(dog, t_dog, 255, cv2.THRESH_BINARY)
 
                     # Combine masks
-                    thresh = cv2.bitwise_or(mask_high, cv2.bitwise_and(mask_low, cv2.bitwise_or(flow_mask, dog_mask)))
+                    thresh = cv2.bitwise_or(
+                        mask_high,
+                        cv2.bitwise_and(mask_low, cv2.bitwise_or(flow_mask, dog_mask)),
+                    )
                     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k3, iterations=1)
                     thresh = cv2.dilate(thresh, k3, iterations=2)
 
                     # Find contours
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    contours, _ = cv2.findContours(
+                        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
                     for cnt in contours:
                         area = cv2.contourArea(cnt)
                         if 50 < area < 5000:
@@ -225,13 +291,18 @@ def run_strategy_7_pipeline():
                             aspect_ratio = float(w) / h
                             if 0.2 < aspect_ratio < 4.0:
                                 border = 15
-                                if x > border and y > border and (x+w) < (w_img-border) and (y+h) < (h_img-border):
+                                if (
+                                    x > border
+                                    and y > border
+                                    and (x + w) < (w_img - border)
+                                    and (y + h) < (h_img - border)
+                                ):
                                     raw_detections.append([x, y, w, h])
 
                     # Score and filter
                     if len(raw_detections) > 0:
                         scored = []
-                        for (x, y, w, h) in raw_detections:
+                        for x, y, w, h in raw_detections:
                             x0, y0 = max(0, x), max(0, y)
                             x1, y1 = min(w_img, x + w), min(h_img, y + h)
                             if x1 <= x0 or y1 <= y0:
@@ -253,14 +324,29 @@ def run_strategy_7_pipeline():
                             raw_detections = [boxes[i] for i in order]
 
                     # CNN verifier
-                    if cfg["use_verifier"] and len(raw_detections) > 0:
-                        bird_scores = strat7_birdness_scores(frame, raw_detections, cfg["crop_scale"])
-                        keep = [i for i, s in enumerate(bird_scores) if s >= cfg["bird_threshold"]]
-                        if len(keep) < cfg["min_keep"]:
-                            keep = list(np.argsort(bird_scores)[::-1][:min(cfg["min_keep"], len(raw_detections))])
-                        if len(keep) > cfg["max_keep"]:
+                    if config["use_verifier"] and len(raw_detections) > 0:
+                        bird_scores = strat7_birdness_scores(
+                            frame, raw_detections, config["crop_scale"]
+                        )
+                        keep = [
+                            i
+                            for i, s in enumerate(bird_scores)
+                            if s >= config["bird_threshold"]
+                        ]
+                        if len(keep) < config["min_keep"]:
+                            keep = list(
+                                np.argsort(bird_scores)[::-1][
+                                    : min(config["min_keep"], len(raw_detections))
+                                ]
+                            )
+                        if len(keep) > config["max_keep"]:
                             keep_scores = [bird_scores[i] for i in keep]
-                            keep = [keep[i] for i in np.argsort(keep_scores)[::-1][:cfg["max_keep"]]]
+                            keep = [
+                                keep[i]
+                                for i in np.argsort(keep_scores)[::-1][
+                                    : config["max_keep"]
+                                ]
+                            ]
                         raw_detections = [raw_detections[i] for i in keep]
 
             prev_gray = curr_gray
@@ -272,7 +358,7 @@ def run_strategy_7_pipeline():
             key = f"{video_name}/{os.path.basename(img_path)}"
             gts = gt_data.get(key, [])
             matched_gt = set()
-            
+
             img_tp = img_fp = 0
 
             for p_box in final_preds:
@@ -296,7 +382,7 @@ def run_strategy_7_pipeline():
 
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn
-            
+
             # Calculate IoU for matched pairs
             img_ious = []
             matched_gt_indices = set()
@@ -313,13 +399,13 @@ def run_strategy_7_pipeline():
                 if best_idx != -1 and best_iou > 0:
                     img_ious.append(best_iou)
                     matched_gt_indices.add(best_idx)
-            
+
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-            
+
             # Calculate processing time and memory for this image
             img_processing_time = time.time() - img_start_time
             img_mem = vis_utils.get_memory_usage()
-            
+
             # Save per-image result
             image_result = csv_utils.create_image_result(
                 video_name=video_name,
@@ -331,12 +417,14 @@ def run_strategy_7_pipeline():
                 fp=img_fp,
                 fn=img_fn,
                 processing_time_sec=img_processing_time,
-                iou=img_avg_iou, mAP=0.0, memory_usage_mb=img_mem
+                iou=img_avg_iou,
+                mAP=0.0,
+                memory_usage_mb=img_mem,
             )
-            tracker.add_image_result("strategy_7", image_result)
-            
+            tracker.add_image_result(pipeline_name, image_result)
+
             if (i + 1) % 50 == 0:
-                tracker.save_batch("strategy_7", batch_size=50)
+                tracker.save_batch(pipeline_name, batch_size=50)
 
         vid_time = time.time() - vid_start
         fps = len(images) / vid_time if vid_time > 0 else 0
@@ -346,30 +434,47 @@ def run_strategy_7_pipeline():
 
         # Log video metrics using standard utility
         # Aggregate from detailed data for the video
-        p_data = [d for d in tracker.detailed_data.get("strategy_7", []) if d['video'] == video_name]
-        vid_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-        vid_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+        p_data = [
+            d
+            for d in tracker.detailed_data.get(pipeline_name, [])
+            if d["video"] == video_name
+        ]
+        vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+        vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
-        vis_utils.log_video_metrics(logger, video_name, {
-            'n_frames': len(images),
-            'fps': fps,
-            'precision': prec,
-            'recall': rec,
-            'f1_score': f1,
-            'tp': vid_tp,
-            'fp': vid_fp,
-            'fn': vid_fn,
-            'iou': vid_iou,
-            'mAP': 0.0,
-            'memory_usage_mb': vid_mem,
-            'vid_time': vid_time
-        })
+        vis_utils.log_video_metrics(
+            logger,
+            video_name,
+            {
+                "n_frames": len(images),
+                "fps": fps,
+                "precision": prec,
+                "recall": rec,
+                "f1_score": f1,
+                "tp": vid_tp,
+                "fp": vid_fp,
+                "fn": vid_fn,
+                "iou": vid_iou,
+                "mAP": 0.0,
+                "memory_usage_mb": vid_mem,
+                "vid_time": vid_time,
+            },
+        )
 
-        results_data.append({
-            'Video': video_name, 'Frames': len(images), 'FPS': round(fps, 2),
-            'Precision': round(prec, 4), 'Recall': round(rec, 4), 'F1': round(f1, 4),
-            'TP': vid_tp, 'FP': vid_fp, 'FN': vid_fn, 'Video_Time': vid_time
-        })
+        results_data.append(
+            {
+                "Video": video_name,
+                "Frames": len(images),
+                "FPS": round(fps, 2),
+                "Precision": round(prec, 4),
+                "Recall": round(rec, 4),
+                "F1": round(f1, 4),
+                "TP": vid_tp,
+                "FP": vid_fp,
+                "FN": vid_fn,
+                "Video_Time": vid_time,
+            }
+        )
         total_time += vid_time
         total_frames += len(images)
         total_tp += vid_tp
@@ -380,12 +485,16 @@ def run_strategy_7_pipeline():
     avg_fps = total_frames / total_time if total_time > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
+    overall_f1 = (
+        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
+        if (overall_prec + overall_rec) > 0
+        else 0
+    )
 
     # Aggregate additional metrics from detailed data
-    p_data = tracker.detailed_data.get("strategy_7", [])
-    overall_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+    p_data = tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
     summary_metrics = {
         "total_frames": total_frames,
@@ -400,17 +509,17 @@ def run_strategy_7_pipeline():
         "mAP": 0.0,
         "memory_usage_mb": overall_mem,
         "processing_time_sec": total_time,
-        "execution_time_sec": time.time() - start_time
+        "execution_time_sec": time.time() - start_time,
     }
 
     # Log summary using standard utility
-    vis_utils.log_pipeline_summary(logger, "strategy_7", summary_metrics)
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
 
     # Update results tracker
-    tracker.update_summary("strategy_7", summary_metrics)
+    tracker.update_summary(pipeline_name, summary_metrics)
 
     return {
-        "pipeline": "strategy_7",
+        "pipeline": pipeline_name,
         "total_frames": total_frames,
         "avg_fps": avg_fps,
         "precision": overall_prec,

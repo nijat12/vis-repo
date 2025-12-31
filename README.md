@@ -35,14 +35,22 @@ The following table summarizes the performance on **Video 0002** (Standard Fligh
 
 ### Algorithm Logic
 1.  **Global Motion Compensation (GMC):**
-    * Detects features (Shi-Tomasi) and tracks them (Lucas-Kanade Optical Flow).
-    * Computes a **Homography Matrix** to stabilize the background against camera motion.
-2.  **Dynamic Thresholding:**
-    * Computes difference between stabilized frames.
-    * Uses adaptive thresholding ($T = \mu + 4\sigma$) to handle variable environmental noise (e.g., wind).
-3.  **YOLO Refiner:**
-    * Extracts Regions of Interest (ROIs) from motion blobs.
-    * Passes crops to **YOLO** to confirm if the moving blob is a bird.
+    *   Detects features (e.g., Shi-Tomasi corners) in the previous and current frames.
+    *   Tracks these features using Lucas-Kanade Optical Flow.
+    *   Calculates a **Homography Matrix** that maps the previous frame to the current one, effectively stabilizing the background against camera motion (pan, tilt).
+
+2.  **Motion Mask Generation:**
+    *   The previous frame is warped using the homography to align it with the current frame.
+    *   A difference image is computed between the stabilized previous frame and the current frame. Any remaining differences are due to independent object motion.
+    *   A **Dynamic Threshold** ($T = \mu + k\sigma$) is applied to the difference image to create a binary motion mask. This adapts to changing light conditions and environmental noise (wind, rain).
+    *   Morphological operations (opening and dilation) are used to clean up the mask, removing small noise and closing gaps in detected motion blobs.
+
+3.  **ROI-based YOLO Refiner:**
+    *   **Proposal Generation:** The algorithm finds contours in the final motion mask. Each contour represents a "motion blob"—a candidate region where an object might be moving.
+    *   **Filtering:** Contours are filtered based on area and aspect ratio to discard obvious noise (e.g., tiny pixel groups, long thin artifacts).
+    *   **ROI Extraction & Expansion:** For each valid contour, a bounding box is created. This initial **Region of Interest (ROI)** is often too tight. To provide the detector with more visual context, the ROI is expanded by a configurable scaling factor (e.g., 3.0x). A minimum size (e.g., 192x192 pixels) is also enforced.
+    *   **Selective Inference:** These expanded ROI crops are extracted from the original, full-color frame and passed to a **YOLO detector**. This is highly efficient, as the expensive detector only runs on a few small, targeted areas of the image instead of the entire 4K frame.
+    *   **Persistence:** A simple object tracker is used to maintain object identity across frames, reducing flicker and improving stability.
 
 ---
 

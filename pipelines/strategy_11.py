@@ -16,6 +16,7 @@ import cv2
 import torch
 import torchvision
 import numpy as np
+from typing import Dict, Any
 
 try:
     from ultralytics import YOLO
@@ -27,6 +28,7 @@ import vis_utils
 import csv_utils
 from pipelines import register_pipeline
 
+
 def get_tiled_coords(h_img, w_img, tile_size, overlap_ratio=0.2):
     """Generates coordinates for overlapping tiles."""
     step = int(tile_size * (1 - overlap_ratio))
@@ -34,17 +36,20 @@ def get_tiled_coords(h_img, w_img, tile_size, overlap_ratio=0.2):
     x_points.append(w_img - tile_size)
     y_points = list(range(0, h_img - tile_size, step))
     y_points.append(h_img - tile_size)
-    
+
     x_points = sorted(list(set(x_points)))
     y_points = sorted(list(set(y_points)))
-    
+
     coords = []
     for y in y_points:
         for x in x_points:
             coords.append((x, y, x + tile_size, y + tile_size))
     return coords
 
-def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, motion_mask=None):
+
+def get_filtered_roi_predictions(
+    det_model, cls_model, img_bgr, config: Dict[str, Any], frame_idx, motion_mask=None
+):
     """
     1. Grid-based multi-scale classification (224px and 448px).
     2. Overlapping tiles to prevent split objects.
@@ -56,30 +61,34 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
         return []
 
     h_img, w_img, _ = img_bgr.shape
-    
+
     # 1. Generate Grids
-    grid_small = get_tiled_coords(h_img, w_img, cfg['cls_img_size'], cfg['cls_overlap'])
-    grid_large = get_tiled_coords(h_img, w_img, cfg['cls_scale2_size'], cfg['cls_overlap'])
-    
+    grid_small = get_tiled_coords(
+        h_img, w_img, config["cls_img_size"], config["cls_overlap"]
+    )
+    grid_large = get_tiled_coords(
+        h_img, w_img, config["cls_scale2_size"], config["cls_overlap"]
+    )
+
     active_crops = []
-    active_info = [] # (x0, y0, scale_size)
+    active_info = []  # (x0, y0, scale_size)
 
     # 2. Extract & Filter by Motion (if mask provided)
-    for (x0, y0, x1, y1) in grid_small:
+    for x0, y0, x1, y1 in grid_small:
         if motion_mask is not None:
             m_pixels = cv2.countNonZero(motion_mask[y0:y1, x0:x1])
-            if m_pixels < 5: # Slightly lower threshold for tiny birds
+            if m_pixels < 5:  # Slightly lower threshold for tiny birds
                 continue
         active_crops.append(img_bgr[y0:y1, x0:x1])
-        active_info.append((x0, y0, cfg['cls_img_size']))
+        active_info.append((x0, y0, config["cls_img_size"]))
 
-    for (x0, y0, x1, y1) in grid_large:
+    for x0, y0, x1, y1 in grid_large:
         if motion_mask is not None:
             m_pixels = cv2.countNonZero(motion_mask[y0:y1, x0:x1])
             if m_pixels < 10:
                 continue
         active_crops.append(img_bgr[y0:y1, x0:x1])
-        active_info.append((x0, y0, cfg['cls_scale2_size']))
+        active_info.append((x0, y0, config["cls_scale2_size"]))
 
     if not active_crops:
         if frame_idx % 100 == 0:
@@ -87,55 +96,82 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
         return []
 
     # 3. Stage 1: Batch Classification (imgsz=224)
-    cls_results = cls_model(active_crops, imgsz=cfg['cls_img_size'], verbose=False)
-    
+    cls_results = cls_model(active_crops, imgsz=config["cls_img_size"], verbose=False)
+
     verification_centers = []
-    
+
     # Common bird-related keywords in ImageNet for better filtering
-    bird_keywords = ["bird", "finch", "bunting", "indigo", "robin", "bulbul", "jay", "magpie", 
-                     "chickadee", "water ouzel", "dipper", "kite", "eagle", "vulture", "falcon"]
+    bird_keywords = [
+        "bird",
+        "finch",
+        "bunting",
+        "indigo",
+        "robin",
+        "bulbul",
+        "jay",
+        "magpie",
+        "chickadee",
+        "water ouzel",
+        "dipper",
+        "kite",
+        "eagle",
+        "vulture",
+        "falcon",
+    ]
 
     for idx, res in enumerate(cls_results):
         top1_idx = res.probs.top1
         top1_conf = float(res.probs.top1conf)
         top1_name = res.names[top1_idx].lower()
-        
+
         # Robust bird check
         is_bird = any(kw in top1_name for kw in bird_keywords)
-        
-        if is_bird and top1_conf >= cfg['cls_conf_thresh']:
+
+        if is_bird and top1_conf >= config["cls_conf_thresh"]:
             x0, y0, sz = active_info[idx]
-            cx, cy = x0 + sz/2, y0 + sz/2
+            cx, cy = x0 + sz / 2, y0 + sz / 2
             verification_centers.append((cx, cy))
-            logger.debug(f"Frame {frame_idx}: Hit! Tile at ({x0}, {y0}) classified as '{top1_name}' ({top1_conf:.2f})")
-        elif top1_conf > 0.3: # Log interesting near-misses for debug
-            logger.debug(f"Frame {frame_idx}: Candidate at ({active_info[idx][0]}, {active_info[idx][1]}) was '{top1_name}' ({top1_conf:.2f})")
+            logger.debug(
+                f"Frame {frame_idx}: Hit! Tile at ({x0}, {y0}) classified as '{top1_name}' ({top1_conf:.2f})"
+            )
+        elif top1_conf > 0.3:  # Log interesting near-misses for debug
+            logger.debug(
+                f"Frame {frame_idx}: Candidate at ({active_info[idx][0]}, {active_info[idx][1]}) was '{top1_name}' ({top1_conf:.2f})"
+            )
 
     if not verification_centers:
         return []
 
-    logger.info(f"Frame {frame_idx}: {len(verification_centers)} potential bird regions found by classifier.")
+    logger.info(
+        f"Frame {frame_idx}: {len(verification_centers)} potential bird regions found by classifier."
+    )
 
     # 4. Stage 2: Verification with 640px Detector
     final_verification_crops = []
     final_verification_offsets = []
-    
+
     merged_centers = []
     temp_centers = verification_centers.copy()
     while temp_centers:
         curr = temp_centers.pop(0)
         merged_centers.append(curr)
-        temp_centers = [c for c in temp_centers if np.sqrt((c[0]-curr[0])**2 + (c[1]-curr[1])**2) > 200]
+        temp_centers = [
+            c
+            for c in temp_centers
+            if np.sqrt((c[0] - curr[0]) ** 2 + (c[1] - curr[1]) ** 2) > 200
+        ]
 
-    for (cx, cy) in merged_centers:
-        x0 = int(max(0, cx - cfg['img_size']/2))
-        y0 = int(max(0, cy - cfg['img_size']/2))
-        x1 = int(min(w_img, x0 + cfg['img_size']))
-        y1 = int(min(h_img, y0 + cfg['img_size']))
-        
-        if x1 - x0 < cfg['img_size']: x0 = max(0, x1 - cfg['img_size'])
-        if y1 - y0 < cfg['img_size']: y0 = max(0, y1 - cfg['img_size'])
-        
+    for cx, cy in merged_centers:
+        x0 = int(max(0, cx - config["img_size"] / 2))
+        y0 = int(max(0, cy - config["img_size"] / 2))
+        x1 = int(min(w_img, x0 + config["img_size"]))
+        y1 = int(min(h_img, y0 + config["img_size"]))
+
+        if x1 - x0 < config["img_size"]:
+            x0 = max(0, x1 - config["img_size"])
+        if y1 - y0 < config["img_size"]:
+            y0 = max(0, y1 - config["img_size"])
+
         crop = img_bgr[y0:y1, x0:x1]
         if crop.size > 0:
             final_verification_crops.append(crop)
@@ -145,7 +181,13 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
         return []
 
     # Final Detection Pass
-    det_results = det_model(final_verification_crops, imgsz=cfg['img_size'], verbose=False, conf=cfg['conf_thresh'], classes=cfg['model_classes'])
+    det_results = det_model(
+        final_verification_crops,
+        imgsz=config["img_size"],
+        verbose=False,
+        conf=config["conf_thresh"],
+        classes=config["model_classes"],
+    )
 
     all_boxes = []
     all_scores = []
@@ -156,44 +198,53 @@ def get_filtered_roi_predictions(det_model, cls_model, img_bgr, cfg, frame_idx, 
             local_boxes = boxes.xyxy.cpu()
             local_scores = boxes.conf.cpu()
             x_off, y_off = final_verification_offsets[j]
-            
+
             shifted_boxes = local_boxes.clone()
-            shifted_boxes[:, 0] += x_off; shifted_boxes[:, 1] += y_off
-            shifted_boxes[:, 2] += x_off; shifted_boxes[:, 3] += y_off
-            
+            shifted_boxes[:, 0] += x_off
+            shifted_boxes[:, 1] += y_off
+            shifted_boxes[:, 2] += x_off
+            shifted_boxes[:, 3] += y_off
+
             all_boxes.append(shifted_boxes)
             all_scores.append(local_scores)
             logger.info(f"Frame {frame_idx}: Detector CONFIRMED {len(boxes)} bird(s).")
 
     if not all_boxes:
-        logger.debug(f"Frame {frame_idx}: Detector rejected all {len(final_verification_crops)} classifier proposals.")
+        logger.debug(
+            f"Frame {frame_idx}: Detector rejected all {len(final_verification_crops)} classifier proposals."
+        )
         return []
 
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
-    keep = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=cfg['iou_thresh'])
+    keep = torchvision.ops.nms(
+        pred_boxes, pred_scores, iou_threshold=config["iou_thresh"]
+    )
     final = pred_boxes[keep].numpy()
 
-    return [[float(x1), float(y1), float(x2-x1), float(y2-y1)] for x1, y1, x2, y2 in final]
+    return [
+        [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+        for x1, y1, x2, y2 in final
+    ]
+
 
 @register_pipeline("strategy_11")
-def run_strategy_11_pipeline():
+def run_strategy_11_pipeline(config: Dict[str, Any]):
     """Execute Strategy 11: ROI + Classifier + Detector."""
-    logger = logging.getLogger("pipelines.strategy_11")
-    logger.info("STARTING STRATEGY 11 (ROI -> Classifier -> Detector)")
-    
-    cfg = Config.STRATEGY_11_CONFIG
-    
+    pipeline_name = config["run_name"]
+    logger = logging.getLogger(f"pipelines.{pipeline_name}")
+    logger.info(f"--- STARTING STRATEGY 11: {pipeline_name} ---")
+
     if YOLO is None:
         logger.error("❌ ultralytics library not found.")
         raise ImportError("ultralytics library missing")
-    
+
     # Load models
-    logger.info(f"⏳ Loading Detector: {cfg['model_name']}...")
-    logger.info(f"⏳ Loading Classifier: {cfg['classifier_model_name']}...")
+    logger.info(f"⏳ Loading Detector: {config['model_name']}...")
+    logger.info(f"⏳ Loading Classifier: {config['classifier_model_name']}...")
     try:
-        det_model = YOLO(cfg['model_name'])
-        cls_model = YOLO(cfg['classifier_model_name'])
+        det_model = YOLO(config["model_name"])
+        cls_model = YOLO(config["classifier_model_name"])
         logger.info(f"✅ Models Loaded.")
     except Exception as e:
         logger.error(f"❌ Model Load Error: {e}")
@@ -205,24 +256,27 @@ def run_strategy_11_pipeline():
 
     start_time_global = time.time()
 
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, '*')))
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
     video_folders = [f for f in video_folders if os.path.isdir(f)]
-    
+
     if Config.SHOULD_LIMIT_VIDEO:
         if Config.SHOULD_LIMIT_VIDEO == 1:
             video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
         else:
-            video_folders = video_folders[:min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)]
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
 
     tracker = csv_utils.get_results_tracker()
     total_tp = total_fp = total_fn = total_time_sec = total_frames = 0
+    use_sahi = config.get("use_sahi", False)
 
     for video_path in video_folders:
         video_name = os.path.basename(video_path)
-        images = sorted(glob.glob(os.path.join(video_path, '*.jpg')))
+        images = sorted(glob.glob(os.path.join(video_path, "*.jpg")))
         if not images:
             continue
 
@@ -232,44 +286,59 @@ def run_strategy_11_pipeline():
         prev_gray = None
         # Increase skip threshold to bridge the gap between detection frames (every 5 frames)
         # min_hits=1 ensures we don't drop discoveries immediately.
-        obj_tracker = vis_utils.ObjectTracker(dist_thresh=100, max_frames_to_skip=cfg['detect_every'], min_hits=1)
-        
-        last_final_preds = [] # Persistent results across skipped frames
+        obj_tracker = vis_utils.ObjectTracker(
+            dist_thresh=100, max_frames_to_skip=config["detect_every"], min_hits=1
+        )
+
+        last_final_preds = []  # Persistent results across skipped frames
 
         for i, img_path in enumerate(images):
             img_start_time = time.time()
             if i % 50 == 0:
                 percent = ((i + 1) / n_frames) * 100
-                logger.info(f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)")
+                logger.info(
+                    f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
+                )
 
             frame = cv2.imread(img_path)
-            if frame is None: continue
-            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if frame is None:
+                continue
 
-            # Stage 1: Classifier-Gated Detection
-            if i % cfg['detect_every'] == 0:
-                raw_detections = []
-                motion_mask = None
-                if prev_gray is not None:
-                    warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                    if warped_prev is not None:
-                        diff = cv2.absdiff(curr_gray, warped_prev)
-                        _, motion_mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-                        
-                        # Initial filtering to reduce noise
-                        k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                        motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, k3)
-                        motion_mask = cv2.dilate(motion_mask, k3, iterations=2)
-
-                # Run Tiled multi-scale classification guided by motion
-                raw_detections = get_filtered_roi_predictions(
-                    det_model, cls_model, frame, cfg, i, motion_mask=motion_mask
+            raw_detections = []
+            if use_sahi:
+                # When using SAHI, we use the main detection model directly
+                raw_detections = vis_utils.get_sahi_predictions(
+                    det_model, frame, config
                 )
-                
-                # Update tracker only on discovery frames
-                last_final_preds = obj_tracker.update(raw_detections)
+            else:
+                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # Stage 1: Classifier-Gated Detection
+                if i % config["detect_every"] == 0:
+                    motion_mask = None
+                    if prev_gray is not None:
+                        warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+                        if warped_prev is not None:
+                            diff = cv2.absdiff(curr_gray, warped_prev)
+                            _, motion_mask = cv2.threshold(
+                                diff, 25, 255, cv2.THRESH_BINARY
+                            )
 
-            prev_gray = curr_gray
+                            # Initial filtering to reduce noise
+                            k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                            motion_mask = cv2.morphologyEx(
+                                motion_mask, cv2.MORPH_CLOSE, k3
+                            )
+                            motion_mask = cv2.dilate(motion_mask, k3, iterations=2)
+
+                    # Run Tiled multi-scale classification guided by motion
+                    raw_detections = get_filtered_roi_predictions(
+                        det_model, cls_model, frame, config, i, motion_mask=motion_mask
+                    )
+
+                    # Update tracker only on discovery frames
+                    last_final_preds = obj_tracker.update(raw_detections)
+
+                prev_gray = curr_gray
             # Use persistent predictions for all frames
             final_preds = last_final_preds
 
@@ -282,33 +351,40 @@ def run_strategy_11_pipeline():
 
             if i == 0 and gts:
                 logger.info(f"DEBUG: Video {video_name} Frame 0 First GT: {gts[0]}")
-            
+
             p_data_log = []
             for p_idx, p_box in enumerate(final_preds):
                 best_dist = 10000
                 best_idx = -1
                 for g_idx, g_box in enumerate(gts):
-                    if g_idx in matched_gt: continue
+                    if g_idx in matched_gt:
+                        continue
                     d = vis_utils.calculate_center_distance(p_box, g_box)
-                    if d < best_dist: 
+                    if d < best_dist:
                         best_dist = d
                         best_idx = g_idx
 
                 # Distance threshold for TP match (increased to 100 for 4K)
                 if best_dist <= 100:
-                    vid_tp += 1; img_tp += 1
+                    vid_tp += 1
+                    img_tp += 1
                     matched_gt.add(best_idx)
                 else:
-                    vid_fp += 1; img_fp += 1
-                    if i % 10 == 0 and best_idx != -1: # Only log occasionally
-                        p_data_log.append(f"P{p_idx} ({int(p_box[0])},{int(p_box[1])}) dist={best_dist:.1f} to GT{best_idx}")
+                    vid_fp += 1
+                    img_fp += 1
+                    if i % 10 == 0 and best_idx != -1:  # Only log occasionally
+                        p_data_log.append(
+                            f"P{p_idx} ({int(p_box[0])},{int(p_box[1])}) dist={best_dist:.1f} to GT{best_idx}"
+                        )
 
             if p_data_log and i % 50 == 0:
-                logger.debug(f"Frame {i} Eval: {len(final_preds)} preds, {len(gts)} GTs. Nearest Match Distances: {p_data_log[:3]}")
+                logger.debug(
+                    f"Frame {i} Eval: {len(final_preds)} preds, {len(gts)} GTs. Nearest Match Distances: {p_data_log[:3]}"
+                )
 
             img_fn = len(gts) - len(matched_gt)
             vid_fn += img_fn
-            
+
             # IoU
             img_ious = []
             matched_gt_indices = set()
@@ -316,25 +392,37 @@ def run_strategy_11_pipeline():
                 best_iou = 0
                 best_idx = -1
                 for g_idx, g_box in enumerate(gts):
-                    if g_idx in matched_gt_indices: continue
+                    if g_idx in matched_gt_indices:
+                        continue
                     iou = vis_utils.box_iou_xywh(p_box, g_box)
-                    if iou > best_iou: best_iou = iou; best_idx = g_idx
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_idx = g_idx
                 if best_idx != -1 and best_iou > 0:
                     img_ious.append(best_iou)
                     matched_gt_indices.add(best_idx)
-            
+
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
             img_processing_time = time.time() - img_start_time
             img_mem = vis_utils.get_memory_usage()
-            
+
             image_result = csv_utils.create_image_result(
-                video_name=video_name, frame_name=img_filename, image_path=img_path,
-                predictions=final_preds, ground_truths=gts, tp=img_tp, fp=img_fp, fn=img_fn,
+                video_name=video_name,
+                frame_name=img_filename,
+                image_path=img_path,
+                predictions=final_preds,
+                ground_truths=gts,
+                tp=img_tp,
+                fp=img_fp,
+                fn=img_fn,
                 processing_time_sec=img_processing_time,
-                iou=img_avg_iou, mAP=0.0, memory_usage_mb=img_mem
+                iou=img_avg_iou,
+                mAP=0.0,
+                memory_usage_mb=img_mem,
             )
-            tracker.add_image_result("strategy_11", image_result)
-            if (i + 1) % 50 == 0: tracker.save_batch("strategy_11", batch_size=50)
+            tracker.add_image_result(pipeline_name, image_result)
+            if (i + 1) % 50 == 0:
+                tracker.save_batch(pipeline_name, batch_size=50)
 
         # Video Stats
         vid_time = time.time() - vid_start
@@ -342,44 +430,83 @@ def run_strategy_11_pipeline():
         prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
         rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
-        
-        p_data = [d for d in tracker.detailed_data.get("strategy_11", []) if d['video'] == video_name]
-        vid_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-        vid_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
 
-        vis_utils.log_video_metrics(logger, video_name, {
-            'n_frames': n_frames, 'fps': vid_fps, 'precision': prec, 'recall': rec, 'f1_score': f1,
-            'tp': vid_tp, 'fp': vid_fp, 'fn': vid_fn, 'iou': vid_iou, 'mAP': 0.0,
-            'memory_usage_mb': vid_mem, 'vid_time': vid_time
-        })
-        
-        total_time_sec += vid_time; total_frames += n_frames
-        total_tp += vid_tp; total_fp += vid_fp; total_fn += vid_fn
+        p_data = [
+            d
+            for d in tracker.detailed_data.get(pipeline_name, [])
+            if d["video"] == video_name
+        ]
+        vid_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+        vid_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+
+        vis_utils.log_video_metrics(
+            logger,
+            video_name,
+            {
+                "n_frames": n_frames,
+                "fps": vid_fps,
+                "precision": prec,
+                "recall": rec,
+                "f1_score": f1,
+                "tp": vid_tp,
+                "fp": vid_fp,
+                "fn": vid_fn,
+                "iou": vid_iou,
+                "mAP": 0.0,
+                "memory_usage_mb": vid_mem,
+                "vid_time": vid_time,
+            },
+        )
+
+        total_time_sec += vid_time
+        total_frames += n_frames
+        total_tp += vid_tp
+        total_fp += vid_fp
+        total_fn += vid_fn
 
     # Final Summary
     avg_fps = total_frames / total_time_sec if total_time_sec > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = 2 * (overall_prec * overall_rec) / (overall_prec + overall_rec) if (overall_prec + overall_rec) > 0 else 0
+    overall_f1 = (
+        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
+        if (overall_prec + overall_rec) > 0
+        else 0
+    )
 
-    p_data = tracker.detailed_data.get("strategy_11", [])
-    overall_iou = np.mean([d['iou'] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d['memory_usage_mb'] for d in p_data]) if p_data else 0.0
+    p_data = tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
     summary_metrics = {
-        "total_frames": total_frames, "avg_fps": avg_fps, "precision": overall_prec, "recall": overall_rec, "f1_score": overall_f1,
-        "tp": total_tp, "fp": total_fp, "fn": total_fn, "iou": overall_iou, "mAP": 0.0, "memory_usage_mb": overall_mem,
-        "processing_time_sec": total_time_sec, "execution_time_sec": time.time() - start_time_global
+        "total_frames": total_frames,
+        "avg_fps": avg_fps,
+        "precision": overall_prec,
+        "recall": overall_rec,
+        "f1_score": overall_f1,
+        "tp": total_tp,
+        "fp": total_fp,
+        "fn": total_fn,
+        "iou": overall_iou,
+        "mAP": 0.0,
+        "memory_usage_mb": overall_mem,
+        "processing_time_sec": total_time_sec,
+        "execution_time_sec": time.time() - start_time_global,
     }
 
-    vis_utils.log_pipeline_summary(logger, "strategy_11", summary_metrics)
-    tracker.update_summary("strategy_11", summary_metrics)
-    
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
+    tracker.update_summary(pipeline_name, summary_metrics)
+
     return {
-        "pipeline": "strategy_11",
-        "total_frames": total_frames, "avg_fps": avg_fps, "precision": overall_prec, "recall": overall_rec, "f1_score": overall_f1,
+        "pipeline": pipeline_name,
+        "total_frames": total_frames,
+        "avg_fps": avg_fps,
+        "precision": overall_prec,
+        "recall": overall_rec,
+        "f1_score": overall_f1,
         "execution_time": time.time() - start_time_global,
     }
+
 
 if __name__ == "__main__":
     vis_utils.setup_logging()
