@@ -598,7 +598,7 @@ def get_sahi_predictions(
 
     final_preds = []
     for pred in result.object_prediction_list:
-        if pred.category.id in [config["bird_class_id"]]:
+        if pred.category.id in config["model_classes"]:
             box = pred.bbox.to_xywh()
             score = pred.score.value
             final_preds.append(box + [score])

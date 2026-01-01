@@ -408,7 +408,7 @@ def process_video_worker(args):
             imgsz=config["img_size"],
             verbose=False,
             conf=config["conf_thresh"],
-            classes=[config["bird_class_id"]],
+            classes=config["model_classes"],
         )
 
         # --- STEP 3: MERGE DETECTIONS ---

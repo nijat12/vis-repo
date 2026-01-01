@@ -110,11 +110,23 @@ class Config:
         "model_classes": [14],  # Bird class only
     }
 
-    BASELINE_BASE_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
+    BASELINE_BASE_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG,
+        "use_tiling": False,
+        "use_nms": False,
+    }
 
-    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
+    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG,
+        "use_tiling": True,
+        "use_nms": False,
+    }
 
-    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {**BASELINE_CONFIG}
+    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {
+        **BASELINE_CONFIG,
+        "use_tiling": True,
+        "use_nms": True,
+    }
 
     # ==========================================
     # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLO)
@@ -164,7 +176,7 @@ class Config:
     STRATEGY_9_CONFIG: Dict[str, Any] = {
         "model_path": UNIFIED_MODEL_NAME,  # Using YOLO
         "img_size": 640,  # Inference size
-        "bird_class_id": 14,  # YOLO Bird class ID
+        "model_classes": [14],  # YOLO Bird class ID
         "tracker_dist_thresh": 50,  # Pixel distance for DotD association
         "max_age": 15,  # Max frames to keep lost tracks
         "min_hits": 2,  # Min hits to confirm track
@@ -180,7 +192,7 @@ class Config:
         "motion_pixel_threshold": 5,
         "use_morphological_dilation": True,
         "full_scan_interval": 10,
-        "bird_class_id": 14,
+        "model_classes": [14],  # Bird class only
     }
 
     STRATEGY_11_CONFIG: Dict[str, Any] = {

@@ -132,3 +132,29 @@ The following table summarizes the performance on **Video 0002** (Standard Fligh
     *   Only ROIs that were "verified" as bird-like by the classifier are passed to the **YOLO Detection model**.
     *   This reduces the number of expensive detection inferences, especially in noisy environments (moving leaves, wind).
 4.  **Benefits:** Combines the high recall of motion detection with the speed of classification and the high precision of localized detection.
+
+---
+
+## 8. Strategy 12: GMC + Dynamic Thresholding + Interpolation (`strategy_12.py`)
+**Type:** Hybrid (Motion + Verifier + Interpolation)  
+**Goal:** Enhance the throughput of the motion detection pipeline by strategically skipping frames and estimating object paths. This strategy is a direct enhancement of **Strategy 2**.
+
+### Algorithm Logic
+1.  **Core Motion Detection:** It uses the same motion detection pipeline as **Strategy 2**: Global Motion Compensation (GMC) followed by dynamic thresholding to generate Regions of Interest (ROIs) where motion is occurring.
+2.  **Frame Skipping (Temporal Scheduling):** Instead of running the expensive motion analysis and YOLO detection on every single frame, it only processes "keyframes" every `N` frames (set by `detect_every`).
+3.  **Linear Interpolation:** For the `N-1` frames between these keyframes, the pipeline does not perform any detection. It estimates the positions of birds by taking the bounding boxes from the previous keyframe and the current one and linearly interpolating their position and size.
+4.  **Efficiency vs. Accuracy:** This approach significantly boosts the frames-per-second (FPS) by reducing the total number of inferences. The trade-off is a potential decrease in accuracy for objects that exhibit highly non-linear motion between keyframes.
+
+---
+
+## 9. Strategy 13: Motion-Gated Classifier Funnel (`strategy_13.py`)
+**Type:** Multi-Stage Hybrid Detector (Motion -> Classification -> Detection)  
+**Goal:** Achieve maximum efficiency by creating a "funnel" that uses a cascade of fast, cheap tests to progressively discard uninteresting image regions, ensuring the expensive detector only runs where absolutely necessary. This strategy is a hybrid of **Strategy 10** and **Strategy 11**.
+
+### Algorithm Logic
+The pipeline creates a highly efficient "gated funnel" to decide which parts of an image are worth a full detection scan.
+1.  **GMC & Tiling:** The frame is stabilized using Global Motion Compensation and divided into a grid of tiles.
+2.  **Stage 1: Motion Gate (from Strategy 10):** For each tile, a fast check for independent motion is performed. If motion is detected, the tile is considered "active" and is sent directly to the final detection stage.
+3.  **Stage 2: Classifier Gate (from Strategy 11):** Tiles that were static (i.e., failed the motion check) are then passed to a second, much faster test: a lightweight YOLO **classification model**. If this model predicts a bird is present with sufficient confidence, the tile is "rescued" and also marked as active. This critical step allows the pipeline to find birds that are stationary or moving too slowly for motion detection to catch.
+4.  **Stage 3: High-Precision Detection:** Only the tiles that were passed by *either* the motion gate or the classifier gate are processed by the full, expensive YOLO **detection model**. All other tiles are skipped entirely.
+5.  **Benefits:** This architecture combines the high recall of motion detection for moving targets with the ability of a classifier to find static targets, creating a robust system that dramatically reduces computational load without sacrificing detection capabilities.

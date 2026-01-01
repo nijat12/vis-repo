@@ -184,21 +184,185 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
 
 
 @register_pipeline("baseline_base")
-def run_baseline_base(config: Dict[str, Any]):
-    """Runs the baseline variant with no tiling."""
-    return _run_baseline_variant(config, use_tiling=False, use_nms=False)
-
-
 @register_pipeline("baseline_w_tiling")
-def run_baseline_w_tiling(config: Dict[str, Any]):
-    """Runs the baseline variant with tiling but no NMS."""
-    return _run_baseline_variant(config, use_tiling=True, use_nms=False)
-
-
 @register_pipeline("baseline_w_tiling_and_nms")
-def run_baseline_w_tiling_and_nms(config: Dict[str, Any]):
-    """Runs the baseline variant with tiling and NMS."""
-    return _run_baseline_variant(config, use_tiling=True, use_nms=True)
+def run_baseline(config: Dict[str, Any]):
+    """
+    Core logic for running all baseline variants.
+    Behavior is controlled by `use_tiling` and `use_nms` in the config.
+    PARALLELIZED VERSION
+    """
+    pipeline_name = config["run_name"]
+    logger = logging.getLogger(f"{pipeline_name}")
+    logger.info(f"--- STARTING VARIANT: {pipeline_name} ---")
+
+    # We check model existence in main process but load in workers
+    if YOLO is None:
+        logger.error("❌ ultralytics library missing")
+        raise ImportError("ultralytics library missing")
+
+    # Load ground truth
+    gt_data = vis_utils.load_json_ground_truth(Config.LOCAL_JSON_PATH)
+    if not gt_data:
+        raise RuntimeError("Failed to load ground truth data")
+
+    start_time = time.time()
+
+    # Select videos to process
+    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
+    video_folders = [f for f in video_folders if os.path.isdir(f)]
+
+    if Config.SHOULD_LIMIT_VIDEO:
+        if Config.SHOULD_LIMIT_VIDEO == 1:
+            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
+        else:
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
+
+    if not video_folders:
+        raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
+
+    logger.info(
+        f"📂 Found {len(video_folders)} videos. Starting parallel processing with {Config.MAX_WORKERS} workers..."
+    )
+
+    # Initialize results tracker
+    tracker = csv_utils.get_results_tracker()
+
+    total_tp = total_fp = total_fn = total_time = total_frames = 0
+    total_map_sum = 0.0
+    total_dotd_sum = 0.0
+    total_videos_processed = 0
+
+    # Prepare Args
+    # The config dict is now self-contained, so we can pass it directly.
+    worker_args = [(vf, config, gt_data) for vf in video_folders]
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=Config.MAX_WORKERS
+    ) as executor:
+        # Submit all jobs
+        future_to_video = {
+            executor.submit(process_video_worker, args): args[0] for args in worker_args
+        }
+
+        for future in concurrent.futures.as_completed(future_to_video):
+            video_path = future_to_video[future]
+            video_name = os.path.basename(video_path)
+            try:
+                result = future.result()
+                if result is None:
+                    logger.warning(f"⚠️ No result for {video_name}")
+                    continue
+
+                # Unpack results
+                # Metric Logging
+                vis_utils.log_video_metrics(
+                    logger,
+                    result["video_name"],
+                    {
+                        "n_frames": result["n_frames"],
+                        "fps": result["fps"],
+                        "precision": result["precision"],
+                        "recall": result["recall"],
+                        "f1_score": result["f1_score"],
+                        "tp": result["tp"],
+                        "fp": result["fp"],
+                        "fn": result["fn"],
+                        "mAP": result["mAP"],
+                        "dotd": result["dotd"],
+                        "vid_time": result["vid_time"],
+                        "iou": (
+                            np.mean([r["iou"] for r in result["image_results"]])
+                            if result["image_results"]
+                            else 0.0
+                        ),
+                        "memory_usage_mb": (
+                            np.mean(
+                                [r["memory_usage_mb"] for r in result["image_results"]]
+                            )
+                            if result["image_results"]
+                            else 0.0
+                        ),
+                    },
+                )
+
+                # Update totals
+                total_frames += result["n_frames"]
+                total_time += result["vid_time"]
+                total_tp += result["tp"]
+                total_fp += result["fp"]
+                total_fn += result["fn"]
+                total_map_sum += result["mAP"]
+                total_dotd_sum += result["dotd"]
+                total_videos_processed += 1
+
+                # Add to tracker
+                for img_res in result["image_results"]:
+                    tracker.add_image_result(pipeline_name, img_res)
+
+                # Save batch occasionally (here we save after every video to be safe)
+                tracker.save_batch(pipeline_name, batch_size=1)
+
+            except Exception as e:
+                logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
+
+    # Calculate overall metrics
+    avg_fps = total_frames / total_time if total_time > 0 else 0
+    overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+    overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+    overall_f1 = (
+        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
+        if (overall_prec + overall_rec) > 0
+        else 0
+    )
+
+    # Aggregate additional metrics from detailed data
+    p_data = tracker.detailed_data.get(pipeline_name, [])
+    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+
+    overall_map = (
+        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+    overall_dotd = (
+        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    )
+
+    # Prepare summary metrics
+    summary_metrics = {
+        "total_frames": total_frames,
+        "avg_fps": avg_fps,
+        "precision": overall_prec,
+        "recall": overall_rec,
+        "f1_score": overall_f1,
+        "tp": total_tp,
+        "fp": total_fp,
+        "fn": total_fn,
+        "iou": overall_iou,
+        "mAP": overall_map,
+        "dotd": overall_dotd,
+        "memory_usage_mb": overall_mem,
+        "processing_time_sec": total_time,
+        "execution_time_sec": time.time() - start_time,
+    }
+
+    # Log summary using standard utility
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
+
+    # Update results tracker with summary metrics
+    tracker.update_summary(pipeline_name, summary_metrics, config=config)
+
+    return {
+        "pipeline": pipeline_name,
+        "total_frames": total_frames,
+        "avg_fps": avg_fps,
+        "precision": overall_prec,
+        "recall": overall_rec,
+        "f1_score": overall_f1,
+        "execution_time": time.time() - start_time,
+    }
 
 
 # Global model cache for worker processes
@@ -245,17 +409,8 @@ def process_video_worker(args):
     vid_start = time.time()
     n_frames = len(images)
 
+    # These flags are now read directly from the self-contained config
     use_sahi = config.get("use_sahi", False)
-    # Check if tiling is needed (passed via config or inferred from pipeline variant)
-    # The variant functions (run_baseline_w_tiling etc) pass this config
-    # We need to reconstruct 'use_tiling' and 'use_nms' or pass them in config.
-    # The original _run_baseline_variant had these as args.
-    # We should add them to config in the caller or infer here.
-    # For simplicity, let's assume config has them or we infer from pipeline logic if needed.
-    # Use config keys if available, else standard baseline defaults
-
-    # Actually, the original code passed use_tiling/use_nms to _run_baseline_variant.
-    # We need to make sure these are in the config dict passed to this worker.
     use_tiling = config.get("use_tiling", False)
     use_nms = config.get("use_nms", False)
 
@@ -267,10 +422,6 @@ def process_video_worker(args):
             logger.info(
                 f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
             )
-
-        # We can't log easily to the main logger from here without setup,
-        # so we skip per-frame logging or use print/custom log queue if needed.
-        # For now, silence per-frame logs or print only on error.
 
         img = cv2.imread(img_path)
         if img is None:
@@ -395,188 +546,4 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
-    }
-
-
-def _run_baseline_variant(config: Dict[str, Any], use_tiling: bool, use_nms: bool):
-    """
-    Core logic for running a specific baseline variant.
-    PARALLELIZED VERSION
-    """
-    pipeline_name = config["run_name"]
-    logger = logging.getLogger(f"{pipeline_name}")
-    logger.info(f"--- STARTING VARIANT: {pipeline_name} ---")
-
-    # Add variant flags to config for worker
-    config["use_tiling"] = use_tiling
-    config["use_nms"] = use_nms
-
-    MODEL_NAME = config["model_name"]
-    # We check model existence in main process but load in workers
-    if YOLO is None:
-        logger.error("❌ ultralytics library missing")
-        raise ImportError("ultralytics library missing")
-
-    # Load ground truth
-    gt_data = vis_utils.load_json_ground_truth(Config.LOCAL_JSON_PATH)
-    if not gt_data:
-        raise RuntimeError("Failed to load ground truth data")
-
-    start_time = time.time()
-
-    # Select videos to process
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
-    video_folders = [f for f in video_folders if os.path.isdir(f)]
-
-    if Config.SHOULD_LIMIT_VIDEO:
-        if Config.SHOULD_LIMIT_VIDEO == 1:
-            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
-        else:
-            video_folders = video_folders[
-                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
-            ]
-
-    if not video_folders:
-        raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
-
-    logger.info(
-        f"📂 Found {len(video_folders)} videos. Starting parallel processing with {Config.MAX_WORKERS} workers..."
-    )
-
-    # Initialize results tracker
-    tracker = csv_utils.get_results_tracker()
-
-    total_tp = total_fp = total_fn = total_time = total_frames = 0
-    total_map_sum = 0.0
-    total_dotd_sum = 0.0
-    total_videos_processed = 0
-
-    # Prepare Args
-    # We can pass the whole gt_data or subset. Passing whole dict is cleaner if it's not massive (40k entries is fine for copy-on-write usually)
-    worker_args = [(vf, config, gt_data) for vf in video_folders]
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=Config.MAX_WORKERS
-    ) as executor:
-        # Submit all jobs
-        future_to_video = {
-            executor.submit(process_video_worker, args): args[0] for args in worker_args
-        }
-
-        for future in concurrent.futures.as_completed(future_to_video):
-            video_path = future_to_video[future]
-            video_name = os.path.basename(video_path)
-            try:
-                result = future.result()
-                if result is None:
-                    logger.warning(f"⚠️ No result for {video_name}")
-                    continue
-
-                # Unpack results
-                # Metric Logging
-                vis_utils.log_video_metrics(
-                    logger,
-                    result["video_name"],
-                    {
-                        "n_frames": result["n_frames"],
-                        "fps": result["fps"],
-                        "precision": result["precision"],
-                        "recall": result["recall"],
-                        "f1_score": result["f1_score"],
-                        "tp": result["tp"],
-                        "fp": result["fp"],
-                        "fn": result["fn"],
-                        "mAP": result["mAP"],
-                        "dotd": result["dotd"],
-                        "vid_time": result["vid_time"],
-                        # We calculate IoU/Mem from detailed results if needed or approximate
-                        "iou": (
-                            np.mean([r["iou"] for r in result["image_results"]])
-                            if result["image_results"]
-                            else 0.0
-                        ),
-                        "memory_usage_mb": (
-                            np.mean(
-                                [r["memory_usage_mb"] for r in result["image_results"]]
-                            )
-                            if result["image_results"]
-                            else 0.0
-                        ),
-                    },
-                )
-
-                # Update totals
-                total_frames += result["n_frames"]
-                total_time += result["vid_time"]
-                total_tp += result["tp"]
-                total_fp += result["fp"]
-                total_fn += result["fn"]
-                total_map_sum += result["mAP"]
-                total_dotd_sum += result["dotd"]
-                total_videos_processed += 1
-
-                # Add to tracker
-                for img_res in result["image_results"]:
-                    tracker.add_image_result(pipeline_name, img_res)
-
-                # Save batch occasionally (here we save after every video to be safe)
-                tracker.save_batch(pipeline_name, batch_size=1)
-
-            except Exception as e:
-                logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
-
-    # Calculate overall metrics
-    avg_fps = total_frames / total_time if total_time > 0 else 0
-    overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-    overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = (
-        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
-        if (overall_prec + overall_rec) > 0
-        else 0
-    )
-
-    # Aggregate additional metrics from detailed data
-    p_data = tracker.detailed_data.get(pipeline_name, [])
-    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
-
-    overall_map = (
-        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
-    )
-    overall_dotd = (
-        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
-    )
-
-    # Prepare summary metrics
-    summary_metrics = {
-        "total_frames": total_frames,
-        "avg_fps": avg_fps,
-        "precision": overall_prec,
-        "recall": overall_rec,
-        "f1_score": overall_f1,
-        "tp": total_tp,
-        "fp": total_fp,
-        "fn": total_fn,
-        "iou": overall_iou,
-        "mAP": overall_map,
-        "dotd": overall_dotd,
-        "memory_usage_mb": overall_mem,
-        "processing_time_sec": total_time,
-        "execution_time_sec": time.time() - start_time,
-    }
-
-    # Log summary using standard utility
-    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
-
-    # Update results tracker with summary metrics
-    tracker.update_summary(pipeline_name, summary_metrics, config=config)
-
-    return {
-        "pipeline": pipeline_name,
-        "total_frames": total_frames,
-        "avg_fps": avg_fps,
-        "precision": overall_prec,
-        "recall": overall_rec,
-        "f1_score": overall_f1,
-        "execution_time": time.time() - start_time,
     }
