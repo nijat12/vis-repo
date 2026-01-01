@@ -81,6 +81,7 @@ def process_video_worker(args):
     if not images:
         return None
 
+    n_frames = len(images)
     vid_start_time = time.time()
 
     # Metrics accumulation for this video
