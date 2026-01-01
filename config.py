@@ -93,6 +93,7 @@ class Config:
     # ==========================================
     # SAHI CONFIG
     # ==========================================
+    SAHI_VARIANTS: List[bool] = [True, False]
     SAHI_CONFIG: Dict[str, Any] = {
         "sahi_slice_height": 640,
         "sahi_slice_width": 640,

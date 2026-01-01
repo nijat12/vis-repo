@@ -69,7 +69,7 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
             # --- SAHI vs. Legacy Tiling Variants ---
             # Strategy 7 does not use tiling, so it's excluded from SAHI runs
             # Strategy 9 is SAHI-native, so it only runs the SAHI variant
-            sahi_variants = [True, False]
+            sahi_variants = Config.SAHI_VARIANTS
             if "strategy_7" in base_pipeline_name:
                 sahi_variants = [False]
             elif "strategy_9" in base_pipeline_name:
