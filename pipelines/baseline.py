@@ -184,8 +184,8 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
 
 
 @register_pipeline("baseline_base")
-@register_pipeline("baseline_w_tiling")
-@register_pipeline("baseline_w_tiling_and_nms")
+@register_pipeline("strategy_1")
+@register_pipeline("strategy_3")
 def run_baseline(config: Dict[str, Any]):
     """
     Core logic for running all baseline variants.

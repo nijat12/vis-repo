@@ -1,61 +1,104 @@
 #!/bin/bash
 
-# 1. Update System and Install Build Dependencies for Pyenv
-sudo apt-get update
-sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
-libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
-libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
-git libgl1-mesa-glx libglib2.0-0
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
-# 2. Establish SSH Key
-if [ ! -f ~/.ssh/id_ed25519 ]; then
-    ssh-keygen -t ed25519 -C "nijat12@gmail.com" -N "" -f ~/.ssh/id_ed25519
-fi
-git config --global user.name "Nijat Zeynalov"
-git config --global user.email "nijat12@gmail.com"
-echo "-------------------------------------------------------"
-echo "COPY THIS KEY TO GITHUB (Settings -> SSH and GPG keys):"
-cat ~/.ssh/id_ed25519.pub
-echo "-------------------------------------------------------"
-read -p "Press enter once you have added the key to GitHub to continue..."
+# --- Configuration ---
+PYTHON_CMD="python3"
+MIN_PYTHON_VERSION="3.8"
 
-# 3. Install Pyenv
-if [ ! -d ~/.pyenv ]; then
-    curl https://pyenv.run | bash
-fi
+# --- Helper Functions ---
+command_exists() {
+    command -v "$1" &> /dev/null
+}
 
-# Add Pyenv to bashrc for the current session
-export PYENV_ROOT="$HOME/.pyenv"
-[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init -)"
+version_gt() {
+    test "$(printf 
+%s\n
+' "$@" | sort -V | head -n 1)" != "$2"
+}
 
-# 4. Install Python 3.14.2
-echo "Installing Python 3.14.2... (This may take a few minutes)"
-pyenv install 3.14.2
-pyenv global 3.14.2
+# --- Main Script ---
+echo "Starting project setup..."
 
-# 5. Clone the Repository
-if [ ! -d "vis-repo" ]; then
-    git clone git@github.com:nijat12/vis-repo.git
+# 1. Install System Dependencies
+echo "Step 1/5: Installing system dependencies (requires sudo)..."
+if command_exists apt-get; then
+    sudo apt-get update
+    sudo apt-get install -y python3-pip python3-venv libgl1-mesa-glx libglib2.0-0
+else
+    echo "Warning: 'apt-get' not found. Skipping system dependency installation."
+    echo "Please ensure you have python3, pip, venv, and GUI libraries (like libGL) installed."
 fi
 
-# 6. Set up Virtual Environment
-cd vis-repo
-python3 -m venv .venv
+# 2. Check for Python, Pip, and Venv
+echo "Step 2/5: Verifying Python environment..."
+if ! command_exists $PYTHON_CMD; then
+    echo "Error: Python 3 is not installed or not in PATH. Please install it."
+    exit 1
+fi
+
+PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo "Found Python version: $PYTHON_VERSION"
+
+if ! version_gt $PYTHON_VERSION $MIN_PYTHON_VERSION; then
+    echo "Warning: Python version is $PYTHON_VERSION, but > $MIN_PYTHON_VERSION is recommended."
+fi
+
+# Check for venv module
+if ! $PYTHON_CMD -c "import venv" &> /dev/null; then
+    echo "Error: The 'venv' module is not available for your Python installation."
+    echo "On Debian/Ubuntu, you might need to run: sudo apt-get install python3-venv"
+    exit 1
+fi
+
+# 3. Set up Virtual Environment
+echo "Step 3/5: Setting up Python virtual environment in './.venv'..."
+if [ ! -d ".venv" ]; then
+    $PYTHON_CMD -m venv .venv
+else
+    echo "Virtual environment already exists."
+fi
+
+# Activate the virtual environment for the rest of the script
 source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
 
-# 7. Automate Terminal Startup
-# This adds logic to .bashrc to auto-navigate and auto-activate
-if ! grep -q "vis-repo" ~/.bashrc; then
-    echo "" >> ~/.bashrc
-    echo "# Auto-load vis-repo environment" >> ~/.bashrc
-    echo "export PYENV_ROOT=\"\$HOME/.pyenv\"" >> ~/.bashrc
-    echo "[[ -d \$PYENV_ROOT/bin ]] && export PATH=\"\$PYENV_ROOT/bin:\$PATH\"" >> ~/.bashrc
-    echo "eval \"\$(pyenv init -)\"" >> ~/.bashrc
-    echo "cd ~/vis-repo" >> ~/.bashrc
-    echo "source .venv/bin/activate" >> ~/.bashrc
+# 4. Install Python Packages
+echo "Step 4/5: Installing Python packages from requirements.txt..."
+pip install --upgrade pip
+if [ -f "requirements.txt" ]; then
+    pip install -r requirements.txt
+else
+    echo "Warning: requirements.txt not found. Skipping package installation."
 fi
 
-echo "Setup Complete! Please run: source ~/.bashrc"
+# 5. Create default runtime_config.json
+echo "Step 5/5: Creating default runtime configuration..."
+if [ ! -f "runtime_config.json" ]; then
+    cat <<EOL > runtime_config.json
+{
+    "ENABLE_KILLSWITCH": false,
+    "ENABLED_PIPELINES": [
+        "baseline_base",
+        "strategy_1",
+        "strategy_3",
+        "strategy_5",
+        "strategy_8",
+        "strategy_9",
+        "strategy_10",
+        "strategy_11",
+        "strategy_12",
+        "strategy_13"
+    ]
+}
+EOL
+    echo "Created runtime_config.json."
+else
+    echo "runtime_config.json already exists."
+fi
+
+
+echo ""
+echo "✅ Setup Complete!"
+echo "To activate the virtual environment in your shell, run:"
+echo "source .venv/bin/activate"

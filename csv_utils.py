@@ -168,12 +168,19 @@ class ResultsTracker:
                             elif "AP" in df.columns:
                                 enhanced_metrics["AP"] = df["AP"].mean()
                             if "processing_time_sec" in df.columns:
+                                total_frames_from_detailed = len(df)
+                                total_processing_time_from_detailed = df["processing_time_sec"].sum()
+
                                 enhanced_metrics["avg_processing_time_sec"] = df[
                                     "processing_time_sec"
                                 ].mean()
-                                enhanced_metrics["total_processing_time_sec"] = df[
-                                    "processing_time_sec"
-                                ].sum()
+                                enhanced_metrics["total_processing_time_sec"] = total_processing_time_from_detailed
+
+                                # Recalculate avg_fps to match user's expectation (inverse of avg_processing_time_sec from detailed data)
+                                if total_processing_time_from_detailed > 0:
+                                    enhanced_metrics["avg_fps"] = total_frames_from_detailed / total_processing_time_from_detailed
+                                else:
+                                    enhanced_metrics["avg_fps"] = 0.0
                             if "memory_usage_mb" in df.columns:
                                 enhanced_metrics["avg_memory_usage_mb"] = df[
                                     "memory_usage_mb"

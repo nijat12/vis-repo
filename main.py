@@ -67,16 +67,32 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
             conf_str = str(conf).replace(".", "")
 
             # --- SAHI vs. Legacy Tiling Variants ---
-            # Strategy 7 does not use tiling, so it's excluded from SAHI runs
-            # Strategy 9 is SAHI-native, so it only runs the SAHI variant
             sahi_variants = Config.SAHI_VARIANTS
-            if "strategy_7" in base_pipeline_name:
+            if (
+                base_pipeline_name == "baseline_base"
+                or base_pipeline_name == "strategy_12"
+            ):
+                sahi_variants = [False, True]
+            else:
                 sahi_variants = [False]
-            elif "strategy_9" in base_pipeline_name:
-                sahi_variants = [True]
-
             for use_sahi in sahi_variants:
-                run_name = f"{base_pipeline_name}_{conf_str}"
+
+                # Determine effective name for the run
+                effective_name = base_pipeline_name
+                if base_pipeline_name == "strategy_12":
+                    effective_name = f"strategy_12{'b' if use_sahi else 'a'}_{conf_str}"
+                elif base_pipeline_name == "baseline_base":
+                    effective_name = (
+                        f"strategy_4_{conf_str}"
+                        if use_sahi
+                        else f"baseline_base_{conf_str}"
+                    )
+                else:
+                    effective_name = (
+                        f"{effective_name}_{conf_str}_sahi"
+                        if use_sahi
+                        else f"{effective_name}_{conf_str}"
+                    )
 
                 # --- Base Config ---
                 run_config = {
@@ -85,22 +101,23 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
                     "use_sahi": use_sahi,
                 }
 
-                if use_sahi:
-                    run_name += "_sahi"
-
                 # --- Interpolation Variants (for Strategy 13) ---
                 if "strategy_13" in base_pipeline_name:
-                    for use_interp in [True, False]:
-                        interp_run_name = run_name
+                    for use_interp in [False, True]:
+                        interp_run_name = effective_name
                         if use_interp:
-                            interp_run_name += "_interpolation"
+                            interp_run_name = f"strategy_13b"
+                            interp_run_name += f"_{conf_str}"
+                        else:
+                            interp_run_name = f"strategy_13a"
+                            interp_run_name += f"_{conf_str}"
 
                         interp_config = run_config.copy()
                         interp_config["run_name"] = interp_run_name
                         interp_config["use_interpolation"] = use_interp
                         run_configs.append(interp_config)
                 else:
-                    run_config["run_name"] = run_name
+                    run_config["run_name"] = effective_name
                     run_configs.append(run_config)
 
     return run_configs
@@ -208,8 +225,8 @@ def main():
     try:
         # Set multiprocessing start method to 'spawn' for PyTorch fork-safety
         # This must be done at the entry point of the application
-        multiprocessing.set_start_method('spawn', force=True)
-        
+        multiprocessing.set_start_method("spawn", force=True)
+
         # Setup logging
         vis_utils.setup_logging()
         logger.info("VIS PIPELINE - STARTING")
@@ -268,7 +285,7 @@ def main():
                         f"❌ Pipeline {run_config['run_name']} failed: {e}",
                         exc_info=True,
                     )
-                    failed_pipelines.append(run_config['run_name'])
+                    failed_pipelines.append(run_config["run_name"])
                     all_pipeline_results.append(
                         {
                             "pipeline": run_config["run_name"],

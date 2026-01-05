@@ -1,5 +1,5 @@
 """
-Strategy 2 Pipeline: GMC + Dynamic Thresholding + YOLO Refiner
+Strategy 5 Pipeline: GMC + Dynamic Thresholding + YOLO Refiner
 
 This pipeline migrates the logic from Strategy 2 Colab:
 1. Global Motion Compensation (GMC) to align frames.
@@ -136,7 +136,7 @@ def load_worker_model(model_name):
 
 def process_video_worker(args):
     """
-    Worker function to process a single video for Strategy 2.
+    Worker function to process a single video for Strategy 5.
     """
     video_path, config, gt_data = args
     vis_utils.setup_worker_logging(config.get("log_queue"))
@@ -163,7 +163,6 @@ def process_video_worker(args):
     obj_tracker = vis_utils.ObjectTracker(
         dist_thresh=50, max_frames_to_skip=5, min_hits=config["min_hits"]
     )
-    use_sahi = config.get("use_sahi", False)
 
     for i, img_path in enumerate(images):
         img_start_time = time.time()
@@ -178,62 +177,55 @@ def process_video_worker(args):
         if frame is None:
             continue
 
+        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h_img, w_img = curr_gray.shape
+
+        proposals = []
+        if prev_gray is not None:
+            # 1. GMC: Align frames
+            warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+            if warped_prev is not None:
+                # 2. Dynamic Thresholding (Notebook Logic)
+                diff = cv2.absdiff(curr_gray, warped_prev)
+                mean, std = cv2.meanStdDev(diff)
+                dynamic_thresh = mean[0][0] + config["dynamic_multiplier"] * std[0][0]
+                final_thresh = max(
+                    config["min_threshold"],
+                    min(config["max_threshold"], dynamic_thresh),
+                )
+                _, thresh = cv2.threshold(diff, final_thresh, 255, cv2.THRESH_BINARY)
+
+                # 3. Morphological Opening (Notebook Logic)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+                thresh = cv2.dilate(thresh, kernel, iterations=1)
+
+                # 4. Contour Filtering (Notebook Logic)
+                contours, _ = cv2.findContours(
+                    thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if 50 < area < 5000:
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        aspect_ratio = float(w) / h
+                        if 0.2 < aspect_ratio < 4.0:
+                            border = 15
+                            if (
+                                x > border
+                                and y > border
+                                and (x + w) < (w_img - border)
+                                and (y + h) < (h_img - border)
+                            ):
+                                proposals.append([x, y, w, h])
+
+        # 5. YOLO ROI Refiner
         raw_detections = []
-        if use_sahi:
-            raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
-        else:
-            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            h_img, w_img = curr_gray.shape
+        if proposals:
+            raw_detections = get_roi_predictions(model, frame, proposals, config)
 
-            proposals = []
-            if prev_gray is not None:
-                # 1. GMC: Align frames
-                warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                if warped_prev is not None:
-                    # 2. Dynamic Thresholding (Notebook Logic)
-                    diff = cv2.absdiff(curr_gray, warped_prev)
-                    mean, std = cv2.meanStdDev(diff)
-                    dynamic_thresh = (
-                        mean[0][0] + config["dynamic_multiplier"] * std[0][0]
-                    )
-                    final_thresh = max(
-                        config["min_threshold"],
-                        min(config["max_threshold"], dynamic_thresh),
-                    )
-                    _, thresh = cv2.threshold(
-                        diff, final_thresh, 255, cv2.THRESH_BINARY
-                    )
-
-                    # 3. Morphological Opening (Notebook Logic)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-                    thresh = cv2.dilate(thresh, kernel, iterations=1)
-
-                    # 4. Contour Filtering (Notebook Logic)
-                    contours, _ = cv2.findContours(
-                        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
-                        if 50 < area < 5000:
-                            x, y, w, h = cv2.boundingRect(cnt)
-                            aspect_ratio = float(w) / h
-                            if 0.2 < aspect_ratio < 4.0:
-                                border = 15
-                                if (
-                                    x > border
-                                    and y > border
-                                    and (x + w) < (w_img - border)
-                                    and (y + h) < (h_img - border)
-                                ):
-                                    proposals.append([x, y, w, h])
-
-            # 5. YOLO ROI Refiner
-            if proposals:
-                raw_detections = get_roi_predictions(model, frame, proposals, config)
-
-            # Update for next frame
-            prev_gray = curr_gray
+        # Update for next frame
+        prev_gray = curr_gray
 
         # 6. Persistence Tracking
         final_preds = obj_tracker.update(raw_detections)
@@ -337,12 +329,12 @@ def process_video_worker(args):
     }
 
 
-@register_pipeline("strategy_2")
-def run_strategy_2_pipeline(config: Dict[str, Any]):
-    """Execute Strategy 2 pipeline: GMC + Dynamic Threshold + YOLO Refiner."""
+@register_pipeline("strategy_5")
+def run_strategy_5_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 5 pipeline: GMC + Dynamic Threshold + YOLO Refiner."""
     pipeline_name = config["run_name"]
     logger = logging.getLogger(pipeline_name)
-    logger.info(f"--- STARTING STRATEGY 2 (PARALLEL): {pipeline_name} ---")
+    logger.info(f"--- STARTING STRATEGY 5 (PARALLEL): {pipeline_name} ---")
 
     if YOLO is None:
         logger.error(

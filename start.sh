@@ -2,7 +2,6 @@ pkill -f main.py
 killall -9 Python
 rm -rf metrics/*
 rm -rf logs/*
-git fetch && git pull --rebase
 pip install -r requirements.txt
 mkdir -p logs
 nohup python -u main.py > logs/main.log 2>&1 &

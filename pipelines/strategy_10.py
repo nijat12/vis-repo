@@ -101,7 +101,6 @@ def process_video_worker(args):
     vid_start = time.time()
     n_frames = len(images)
     prev_gray = None
-    use_sahi = config.get("use_sahi", False)
 
     # Determine tile grid once
     first_frame = cv2.imread(images[0])
@@ -130,103 +129,101 @@ def process_video_worker(args):
             continue
 
         raw_detections = []
-        if use_sahi:
-            raw_detections = vis_utils.get_sahi_predictions(model, frame, config)
-        else:
-            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # 1. GMC + Motion Mask + Keyframe Logic
-            active_tiles = []
-            active_offsets = []
+        
+        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # 1. GMC + Motion Mask + Keyframe Logic
+        active_tiles = []
+        active_offsets = []
 
-            is_keyframe = (
-                config["full_scan_interval"] > 0
-                and i % config["full_scan_interval"] == 0
-            )
+        is_keyframe = (
+            config["full_scan_interval"] > 0
+            and i % config["full_scan_interval"] == 0
+        )
 
-            if is_keyframe:
-                for x1, y1, x2, y2 in tile_coords:
-                    active_tiles.append(frame[y1:y2, x1:x2])
-                    active_offsets.append((x1, y1))
+        if is_keyframe:
+            for x1, y1, x2, y2 in tile_coords:
+                active_tiles.append(frame[y1:y2, x1:x2])
+                active_offsets.append((x1, y1))
 
-            elif prev_gray is not None:
-                warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                if warped_prev is not None:
-                    diff = cv2.absdiff(curr_gray, warped_prev)
-                    mean, std = cv2.meanStdDev(diff)
-                    final_thresh = max(
-                        20,
-                        min(
-                            80,
-                            mean[0][0] + config["motion_thresh_scale"] * std[0][0],
-                        ),
-                    )
-                    _, thresh = cv2.threshold(
-                        diff, final_thresh, 255, cv2.THRESH_BINARY
-                    )
-
-                    if config.get("use_morphological_dilation", False):
-                        kernel = np.ones((3, 3), np.uint8)
-                        thresh = cv2.dilate(thresh, kernel, iterations=1)
-
-                    for x1, y1, x2, y2 in tile_coords:
-                        tile_mask = thresh[y1:y2, x1:x2]
-                        if cv2.countNonZero(tile_mask) > config.get(
-                            "motion_pixel_threshold", 20
-                        ):
-                            active_tiles.append(frame[y1:y2, x1:x2])
-                            active_offsets.append((x1, y1))
-
-            if active_tiles:
-                results = model(
-                    active_tiles,
-                    imgsz=config["img_size"],
-                    verbose=False,
-                    conf=config["conf_thresh"],
-                    classes=config["model_classes"],
+        elif prev_gray is not None:
+            warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+            if warped_prev is not None:
+                diff = cv2.absdiff(curr_gray, warped_prev)
+                mean, std = cv2.meanStdDev(diff)
+                final_thresh = max(
+                    20,
+                    min(
+                        80,
+                        mean[0][0] + config["motion_thresh_scale"] * std[0][0],
+                    ),
+                )
+                _, thresh = cv2.threshold(
+                    diff, final_thresh, 255, cv2.THRESH_BINARY
                 )
 
-                all_boxes = []
-                all_scores = []
-                for j, res in enumerate(results):
-                    boxes = res.boxes
-                    if len(boxes) > 0:
-                        local_boxes = boxes.xyxy.cpu()
-                        local_scores = boxes.conf.cpu()
-                        x_off, y_off = active_offsets[j]
+                if config.get("use_morphological_dilation", False):
+                    kernel = np.ones((3, 3), np.uint8)
+                    thresh = cv2.dilate(thresh, kernel, iterations=1)
 
-                        shifted_boxes = local_boxes.clone()
-                        shifted_boxes[:, 0] += x_off
-                        shifted_boxes[:, 1] += y_off
-                        shifted_boxes[:, 2] += x_off
-                        shifted_boxes[:, 3] += y_off
+                for x1, y1, x2, y2 in tile_coords:
+                    tile_mask = thresh[y1:y2, x1:x2]
+                    if cv2.countNonZero(tile_mask) > config.get(
+                        "motion_pixel_threshold", 20
+                    ):
+                        active_tiles.append(frame[y1:y2, x1:x2])
+                        active_offsets.append((x1, y1))
 
-                        all_boxes.append(shifted_boxes)
-                        all_scores.append(local_scores)
+        if active_tiles:
+            results = model(
+                active_tiles,
+                imgsz=config["img_size"],
+                verbose=False,
+                conf=config["conf_thresh"],
+                classes=config["model_classes"],
+            )
 
-                if all_boxes:
-                    pred_boxes = torch.cat(all_boxes, dim=0)
-                    pred_scores = torch.cat(all_scores, dim=0)
-                    keep_indices = torchvision.ops.nms(
-                        pred_boxes, pred_scores, iou_threshold=0.45
+            all_boxes = []
+            all_scores = []
+            for j, res in enumerate(results):
+                boxes = res.boxes
+                if len(boxes) > 0:
+                    local_boxes = boxes.xyxy.cpu()
+                    local_scores = boxes.conf.cpu()
+                    x_off, y_off = active_offsets[j]
+
+                    shifted_boxes = local_boxes.clone()
+                    shifted_boxes[:, 0] += x_off
+                    shifted_boxes[:, 1] += y_off
+                    shifted_boxes[:, 2] += x_off
+                    shifted_boxes[:, 3] += y_off
+
+                    all_boxes.append(shifted_boxes)
+                    all_scores.append(local_scores)
+
+            if all_boxes:
+                pred_boxes = torch.cat(all_boxes, dim=0)
+                pred_scores = torch.cat(all_scores, dim=0)
+                keep_indices = torchvision.ops.nms(
+                    pred_boxes, pred_scores, iou_threshold=0.45
+                )
+                final_boxes = pred_boxes[keep_indices]
+                final_scores = pred_scores[keep_indices]
+
+                raw_detections = []
+                for i_box, box in enumerate(final_boxes):
+                    x1, y1, x2, y2 = box.tolist()
+                    score = float(final_scores[i_box])
+                    raw_detections.append(
+                        [
+                            float(x1),
+                            float(y1),
+                            float(x2 - x1),
+                            float(y2 - y1),
+                            score,
+                        ]
                     )
-                    final_boxes = pred_boxes[keep_indices]
-                    final_scores = pred_scores[keep_indices]
 
-                    raw_detections = []
-                    for i, box in enumerate(final_boxes):
-                        x1, y1, x2, y2 = box.tolist()
-                        score = float(final_scores[i])
-                        raw_detections.append(
-                            [
-                                float(x1),
-                                float(y1),
-                                float(x2 - x1),
-                                float(y2 - y1),
-                                score,
-                            ]
-                        )
-
-            prev_gray = curr_gray
+        prev_gray = curr_gray
 
         # --- EVALUATION ---
         img_filename = os.path.basename(img_path)
@@ -440,7 +437,7 @@ def run_strategy_10_pipeline(config: Dict[str, Any]):
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
 
-                for img_res in result["image_results"]:
+                for img_res in result["image_'results"]:
                     tracker.add_image_result(pipeline_name, img_res)
                 tracker.save_batch(pipeline_name, batch_size=1)
 

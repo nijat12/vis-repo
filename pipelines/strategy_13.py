@@ -2,7 +2,7 @@
 Strategy 13 Pipeline: Motion-Gated Classifier Funnel
 
 This advanced pipeline combines multiple strategies for maximum efficiency:
-1. It uses GMC for stabilization and divides the frame into tiles (legacy or SAHI).
+1. It uses GMC for stabilization and divides the frame into native tiles.
 2. For each tile, it first performs a fast motion check (from Strategy 10).
 3. If motion is found, the tile is passed to the main YOLO detector.
 4. If NO motion is found, it performs a fast classification check (from Strategy 11).
@@ -85,10 +85,9 @@ def process_video_worker(args):
     vid_start_time = time.time()
 
     # Metrics accumulation for this video
-    vid_map = 0.0
-    vid_dotd_list = []
     vid_all_preds = []
     vid_all_gts = []
+    vid_dotd_list = []
 
     all_predictions = defaultdict(list)
     last_keyframe_preds: List[List[float]] = []
@@ -97,7 +96,6 @@ def process_video_worker(args):
 
     use_interpolation = config.get("use_interpolation", False)
     detect_every = config.get("detect_every", 1) if use_interpolation else 1
-    use_sahi = config.get("use_sahi", False)
 
     # Read first frame to determine image size and generate tile coordinates
     first_frame = cv2.imread(images[0])
@@ -105,7 +103,6 @@ def process_video_worker(args):
         return None
 
     h_img, w_img = first_frame.shape[:2]
-    # We use the global get_native_slices helper
     tile_coords = get_native_slices(
         h_img, w_img, (config["img_size"], config["img_size"]), 0.2
     )
@@ -128,113 +125,111 @@ def process_video_worker(args):
                 continue
 
             current_preds = []
-            if use_sahi:
-                current_preds = vis_utils.get_sahi_predictions(det_model, frame, config)
-            else:
-                curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                active_tiles, active_offsets = [], []
-                if prev_gray is not None:
-                    # 1. GMC: Align frames
-                    warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
-                    if warped_prev is not None:
-                        # 2. Motion Check
-                        diff = cv2.absdiff(curr_gray, warped_prev)
-                        mean, std = cv2.meanStdDev(diff)
-                        motion_thresh = max(
-                            20,
-                            min(
-                                80,
-                                mean[0][0] + config["motion_thresh_scale"] * std[0][0],
-                            ),
-                        )
-                        _, motion_mask = cv2.threshold(
-                            diff, motion_thresh, 255, cv2.THRESH_BINARY
-                        )
-
-                        cls_cand, cls_offs = [], []
-                        for x1, y1, x2, y2 in tile_coords:
-                            # 3. Check Motion in Tiles
-                            if cv2.countNonZero(motion_mask[y1:y2, x1:x2]) > config.get(
-                                "motion_pixel_threshold", 20
-                            ):
-                                active_tiles.append(frame[y1:y2, x1:x2])
-                                active_offsets.append((x1, y1))
-                            else:
-                                cls_cand.append(frame[y1:y2, x1:x2])
-                                cls_offs.append((x1, y1))
-
-                        # 4. Classifier Check on Static Tiles
-                        if cls_cand:
-                            cls_res = cls_model(
-                                cls_cand,
-                                imgsz=config["cls_img_size"],
-                                verbose=False,
-                            )
-                            bird_kw = ["bird", "finch", "jay", "eagle", "kite"]
-                            for j, r in enumerate(cls_res):
-                                is_bird = any(
-                                    kw in r.names[r.probs.top1].lower()
-                                    for kw in bird_kw
-                                )
-                                if (
-                                    is_bird
-                                    and r.probs.top1conf >= config["cls_conf_thresh"]
-                                ):
-                                    active_tiles.append(cls_cand[j])
-                                    active_offsets.append(cls_offs[j])
-                else:
-                    # First frame logic: normally we just set prev_gray and skip motion/cls checks
-                    # or assume everything could be active. Original logic implicitly skipped.
-                    pass
-
-                prev_gray = curr_gray
-
-                # 5. Run Detector on Active Tiles
-                if active_tiles:
-                    det_res = det_model(
-                        active_tiles,
-                        imgsz=config["img_size"],
-                        conf=config["conf_thresh"],
-                        classes=config["model_classes"],
-                        verbose=False,
+            
+            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            active_tiles, active_offsets = [], []
+            if prev_gray is not None:
+                # 1. GMC: Align frames
+                warped_prev = vis_utils.align_frames(prev_gray, curr_gray)
+                if warped_prev is not None:
+                    # 2. Motion Check
+                    diff = cv2.absdiff(curr_gray, warped_prev)
+                    mean, std = cv2.meanStdDev(diff)
+                    motion_thresh = max(
+                        20,
+                        min(
+                            80,
+                            mean[0][0] + config["motion_thresh_scale"] * std[0][0],
+                        ),
                     )
-                    all_boxes, all_scores = [], []
-                    for j, r in enumerate(det_res):
-                        if len(r.boxes) > 0:
-                            b, s, x_off, y_off = (
-                                r.boxes.xyxy.cpu(),
-                                r.boxes.conf.cpu(),
-                                *active_offsets[j],
-                            )
-                            shifted = b.clone()
-                            shifted[:, 0::2] += x_off
-                            shifted[:, 1::2] += y_off
-                            all_boxes.append(shifted)
-                            all_scores.append(s)
-                    if all_boxes:
-                        pred_boxes, pred_scores = torch.cat(all_boxes), torch.cat(
-                            all_scores
-                        )
-                        keep = torchvision.ops.nms(
-                            pred_boxes, pred_scores, config.get("iou_thresh", 0.45)
-                        )
-                        # Retrieve selected boxes and scores
-                        kept_boxes = pred_boxes[keep]
-                        kept_scores = pred_scores[keep]
+                    _, motion_mask = cv2.threshold(
+                        diff, motion_thresh, 255, cv2.THRESH_BINARY
+                    )
 
-                        # Convert to list [x, y, w, h, score]
-                        for k_idx, box in enumerate(kept_boxes):
-                            x1, y1, x2, y2 = box.tolist()
-                            score = float(kept_scores[k_idx])
-                            current_preds.append(
-                                [
-                                    float(x1),
-                                    float(y1),
-                                    float(x2 - x1),
-                                    float(y2 - y1),
-                                    float(score),
-                                ]
+                    cls_cand, cls_offs = [], []
+                    for x1, y1, x2, y2 in tile_coords:
+                        # 3. Check Motion in Tiles
+                        if cv2.countNonZero(motion_mask[y1:y2, x1:x2]) > config.get(
+                            "motion_pixel_threshold", 20
+                        ):
+                            active_tiles.append(frame[y1:y2, x1:x2])
+                            active_offsets.append((x1, y1))
+                        else:
+                            cls_cand.append(frame[y1:y2, x1:x2])
+                            cls_offs.append((x1, y1))
+
+                    # 4. Classifier Check on Static Tiles
+                    if cls_cand:
+                        cls_res = cls_model(
+                            cls_cand,
+                            imgsz=config["cls_img_size"],
+                            verbose=False,
+                        )
+                        bird_kw = ["bird", "finch", "jay", "eagle", "kite"]
+                        for j, r in enumerate(cls_res):
+                            is_bird = any(
+                                kw in r.names[r.probs.top1].lower()
+                                for kw in bird_kw
                             )
+                            if (
+                                is_bird
+                                and r.probs.top1conf >= config["cls_conf_thresh"]
+                            ):
+                                active_tiles.append(cls_cand[j])
+                                active_offsets.append(cls_offs[j])
+            else:
+                # First frame logic: process all tiles to establish a baseline
+                for x1, y1, x2, y2 in tile_coords:
+                    active_tiles.append(frame[y1:y2, x1:x2])
+                    active_offsets.append((x1, y1))
+
+
+            prev_gray = curr_gray
+
+            # 5. Run Detector on Active Tiles
+            if active_tiles:
+                det_res = det_model(
+                    active_tiles,
+                    imgsz=config["img_size"],
+                    conf=config["conf_thresh"],
+                    classes=config["model_classes"],
+                    verbose=False,
+                )
+                all_boxes, all_scores = [], []
+                for j, r in enumerate(det_res):
+                    if len(r.boxes) > 0:
+                        b, s, x_off, y_off = (
+                            r.boxes.xyxy.cpu(),
+                            r.boxes.conf.cpu(),
+                            *active_offsets[j],
+                        )
+                        shifted = b.clone()
+                        shifted[:, 0::2] += x_off
+                        shifted[:, 1::2] += y_off
+                        all_boxes.append(shifted)
+                        all_scores.append(s)
+                if all_boxes:
+                    pred_boxes, pred_scores = torch.cat(all_boxes), torch.cat(
+                        all_scores
+                    )
+                    keep = torchvision.ops.nms(
+                        pred_boxes, pred_scores, config.get("iou_thresh", 0.45)
+                    )
+                    kept_boxes = pred_boxes[keep]
+                    kept_scores = pred_scores[keep]
+
+                    for k_idx, box in enumerate(kept_boxes):
+                        x1, y1, x2, y2 = box.tolist()
+                        score = float(kept_scores[k_idx])
+                        current_preds.append(
+                            [
+                                float(x1),
+                                float(y1),
+                                float(x2 - x1),
+                                float(y2 - y1),
+                                float(score),
+                            ]
+                        )
 
             all_predictions[i] = current_preds
             if use_interpolation and last_keyframe_idx != -1:
@@ -297,7 +292,7 @@ def process_video_worker(args):
         img_processing_time = time.time() - img_metadata["img_start_time"]
         img_mem = vis_utils.get_memory_usage()
 
-        image_result = csv_utils.create_image_result(
+        image_results.append(csv_utils.create_image_result(
             video_name=video_name,
             frame_name=os.path.basename(img_metadata["image"]),
             image_path=img_metadata["image"],
@@ -309,8 +304,7 @@ def process_video_worker(args):
             processing_time_sec=img_processing_time,
             iou=img_avg_iou,
             memory_usage_mb=img_mem,
-        )
-        image_results.append(image_result)
+        ))
 
     vid_time = time.time() - vid_start_time
     fps = len(images) / vid_time if vid_time > 0 else 0
@@ -323,18 +317,10 @@ def process_video_worker(args):
     vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
 
     return {
-        "video_name": video_name,
-        "n_frames": len(images),
-        "fps": fps,
-        "precision": prec,
-        "recall": rec,
-        "f1_score": f1,
-        "tp": vid_tp,
-        "fp": vid_fp,
-        "fn": vid_fn,
-        "mAP": vid_map,
-        "dotd": vid_dotd,
-        "vid_time": vid_time,
+        "video_name": video_name, "n_frames": len(images), "fps": fps,
+        "precision": prec, "recall": rec, "f1_score": f1,
+        "tp": vid_tp, "fp": vid_fp, "fn": vid_fn,
+        "mAP": vid_map, "dotd": vid_dotd, "vid_time": vid_time,
         "image_results": image_results,
     }
 
@@ -455,7 +441,6 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
             except Exception as e:
                 logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
 
-    # Final Summary
     avg_fps = total_frames / total_time if total_time > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
@@ -465,33 +450,19 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
         else 0
     )
 
-    overall_map = (
-        total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
-    )
-    overall_dotd = (
-        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
-    )
-
-    # Calculate overall IoU/Mem from tracker detailed data
+    overall_map = total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    overall_dotd = total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+    
     p_data = results_tracker.detailed_data.get(pipeline_name, [])
     overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
     overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
 
     summary_metrics = {
-        "total_frames": total_frames,
-        "avg_fps": avg_fps,
-        "precision": overall_prec,
-        "recall": overall_rec,
-        "f1_score": overall_f1,
-        "tp": total_tp,
-        "fp": total_fp,
-        "fn": total_fn,
-        "iou": overall_iou,
-        "mAP": overall_map,
-        "dotd": overall_dotd,
-        "memory_usage_mb": overall_mem,
-        "processing_time_sec": total_time,
-        "execution_time_sec": time.time() - start_time,
+        "total_frames": total_frames, "avg_fps": avg_fps,
+        "precision": overall_prec, "recall": overall_rec, "f1_score": overall_f1,
+        "tp": total_tp, "fp": total_fp, "fn": total_fn, "iou": overall_iou,
+        "mAP": overall_map, "dotd": overall_dotd, "memory_usage_mb": overall_mem,
+        "processing_time_sec": total_time, "execution_time_sec": time.time() - start_time,
     }
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
     results_tracker.update_summary(pipeline_name, summary_metrics, config=config)

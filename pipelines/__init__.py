@@ -26,10 +26,9 @@ def register_pipeline(name: str):
 # Import modules to trigger registration
 from . import (
     baseline,
-    strategy_2,
+    strategy_5,
     strategy_7,
     strategy_8,
-    strategy_9,
     strategy_10,
     strategy_11,
     strategy_12,

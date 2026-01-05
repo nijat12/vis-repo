@@ -27,16 +27,15 @@ class Config:
         """
         default_pipelines: List[str] = [
             "baseline_base",  # YOLO with 4x3 tiled inference
-            "baseline_w_tiling",  # YOLO with 4x3 tiled inference
-            "baseline_w_tiling_and_nms",  # YOLO with 4x3 tiled inference
-            "strategy_2",  # GMC + Dynamic Thresholding + YOLO Refiner
-            # "strategy_7",  # Motion compensation + CNN verifier
+            "strategy_1",  # YOLO with 4x3 tiled inference
+            "strategy_3",  # YOLO with 4x3 tiled inference and NMS
+            "strategy_5",  # GMC + Dynamic Thresholding + YOLO Refiner
             "strategy_8",  # YOLO on ROIs
-            # "strategy_9",  # SAHI Slicing + YOLO + Kalman/Hungarian (DotD)
+            "strategy_9",  # SAHI with Temporal Scheduling (`detect_every`).
             "strategy_10",  # Motion Proposals + YOLO Classification
             "strategy_11",  # Strategy 8 + YOLO Classifier Filter
-            "strategy_12",
-            "strategy_13",
+            "strategy_12",  # Motion Proposals + YOLO Classification + NMS
+            "strategy_13",  # Motion Proposals + YOLO Classification + NMS + Interpolation
         ]
         runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
         if os.path.exists(runtime_config_path):
@@ -117,22 +116,22 @@ class Config:
         "use_nms": False,
     }
 
-    BASELINE_W_TILING_CONFIG: Dict[str, Any] = {
+    STRATEGY_1_CONFIG: Dict[str, Any] = {
         **BASELINE_CONFIG,
         "use_tiling": True,
         "use_nms": False,
     }
 
-    BASELINE_W_TILING_AND_NMS_CONFIG: Dict[str, Any] = {
+    STRATEGY_3_CONFIG: Dict[str, Any] = {
         **BASELINE_CONFIG,
         "use_tiling": True,
         "use_nms": True,
     }
 
     # ==========================================
-    # STRATEGY 2 CONFIG (GMC + Dynamic Threshold + YOLO)
+    # STRATEGY 5 CONFIG (GMC + Dynamic Threshold + YOLO)
     # ==========================================
-    STRATEGY_2_CONFIG: Dict[str, Any] = {
+    STRATEGY_5_CONFIG: Dict[str, Any] = {
         "model_name": UNIFIED_MODEL_NAME,
         "img_size": 640,
         "model_classes": [14],
@@ -167,6 +166,7 @@ class Config:
         "roi_scale": 3.0,
         "min_roi_size": 192,
         "max_rois": 10,
+        "min_hits": 2,  # Min hits to confirm track
         "fullframe_every": 0,  # 0 disables full-frame processing
         "detect_every": 5,  # Run YOLO every N frames
     }
@@ -175,12 +175,11 @@ class Config:
     # STRATEGY 9 CONFIG (SAHI + YOLO + Kalman)
     # ==========================================
     STRATEGY_9_CONFIG: Dict[str, Any] = {
-        "model_path": UNIFIED_MODEL_NAME,  # Using YOLO
+        "model_name": UNIFIED_MODEL_NAME,  # Using YOLO
         "img_size": 640,  # Inference size
         "model_classes": [14],  # YOLO Bird class ID
-        "tracker_dist_thresh": 50,  # Pixel distance for DotD association
-        "max_age": 15,  # Max frames to keep lost tracks
         "min_hits": 2,  # Min hits to confirm track
+        "detect_every": 5,  # Run YOLO every N frames
     }
 
     # ==========================================
@@ -218,7 +217,7 @@ class Config:
     # STRATEGY 12 CONFIG (GMC + Interpolation)
     # ==========================================
     STRATEGY_12_CONFIG: Dict[str, Any] = {
-        **STRATEGY_2_CONFIG,  # Inherits from Strategy 2
+        **STRATEGY_5_CONFIG,  # Inherits from Strategy 5
         "detect_every": 5,
     }
 
@@ -310,9 +309,9 @@ class Config:
         """
         config_map = {
             "baseline_base": cls.BASELINE_BASE_CONFIG,
-            "baseline_w_tiling": cls.BASELINE_W_TILING_CONFIG,
-            "baseline_w_tiling_and_nms": cls.BASELINE_W_TILING_AND_NMS_CONFIG,
-            "strategy_2": cls.STRATEGY_2_CONFIG,
+            "strategy_1": cls.STRATEGY_1_CONFIG,
+            "strategy_3": cls.STRATEGY_3_CONFIG,
+            "strategy_5": cls.STRATEGY_5_CONFIG,
             "strategy_7": cls.STRATEGY_7_CONFIG,
             "strategy_8": cls.STRATEGY_8_CONFIG,
             "strategy_9": cls.STRATEGY_9_CONFIG,

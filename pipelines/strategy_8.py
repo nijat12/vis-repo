@@ -1,11 +1,9 @@
 """
-Strategy 8 Pipeline: YOLO on ROIs (Region of Interest)
+Strategy 8 & 9 Pipelines: Motion-Guided ROI and SAHI with Temporal Scheduling
 
-Implements efficient detection using:
-- Motion compensation for proposal generation
-- YOLO inference only on ROI crops
-- Configurable detection frequency
-- Optional full-frame processing at intervals
+- Strategy 8: Implements efficient detection using motion proposals and YOLO on ROIs.
+- Strategy 9: A variation that uses SAHI for detection combined with the temporal
+  scheduling (`detect_every`) of Strategy 8 for a high-speed, high-recall pipeline.
 """
 
 import os
@@ -171,7 +169,7 @@ def process_video_worker(args):
     n_frames = len(images)
     prev_gray = None
     obj_tracker = vis_utils.ObjectTracker(
-        dist_thresh=50, max_frames_to_skip=4, min_hits=2
+        dist_thresh=50, max_frames_to_skip=4, min_hits=config["min_hits"]
     )
     use_sahi = config.get("use_sahi", False)
 
@@ -383,18 +381,16 @@ def process_video_worker(args):
     }
 
 
-@register_pipeline("strategy_8")
-def run_strategy_8_pipeline(config: Dict[str, Any]):
-    """Execute Strategy 8 pipeline with YOLO on ROIs."""
+def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
+    """Shared logic for executing Strategy 8 and 9."""
     pipeline_name = config["run_name"]
     logger = logging.getLogger(pipeline_name)
-    logger.info(f"--- STARTING STRATEGY 8 (PARALLEL): {pipeline_name} ---")
+    logger.info(
+        f"--- STARTING {pipeline_title.upper()} (PARALLEL): {pipeline_name} ---"
+    )
 
-    # Check dependencies
     if YOLO is None:
-        logger.error(
-            "❌ ultralytics library not found. Please run: pip install ultralytics"
-        )
+        logger.error("❌ ultralytics library not found.")
         raise ImportError("ultralytics library missing")
 
     # Load model (check in main process)
@@ -410,17 +406,18 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
         raise RuntimeError("Failed to load ground truth data")
 
     start_time = time.time()
-
-    video_folders = sorted(glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*")))
-    video_folders = [f for f in video_folders if os.path.isdir(f)]
+    video_folders = sorted(
+        [
+            f
+            for f in glob.glob(os.path.join(Config.LOCAL_TRAIN_DIR, "*"))
+            if os.path.isdir(f)
+        ]
+    )
 
     if Config.SHOULD_LIMIT_VIDEO:
-        if Config.SHOULD_LIMIT_VIDEO == 1:
-            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
-        else:
-            video_folders = video_folders[
-                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
-            ]
+        video_folders = video_folders[
+            : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+        ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
@@ -429,13 +426,9 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
         f"📂 Found {len(video_folders)} videos. Starting parallel processing with {Config.MAX_WORKERS} workers..."
     )
 
-    # Initialize results tracker
     tracker = csv_utils.get_results_tracker()
-
-    total_tp = total_fp = total_fn = total_time = total_frames = 0
-    total_map_sum = 0.0
-    total_dotd_sum = 0.0
-    total_videos_processed = 0
+    total_tp, total_fp, total_fn, total_time, total_frames = 0, 0, 0, 0, 0
+    total_map_sum, total_dotd_sum, total_videos_processed = 0.0, 0.0, 0
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
 
@@ -445,10 +438,8 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
         future_to_video = {
             executor.submit(process_video_worker, args): args[0] for args in worker_args
         }
-
         for future in concurrent.futures.as_completed(future_to_video):
-            video_path = future_to_video[future]
-            video_name = os.path.basename(video_path)
+            video_name = os.path.basename(future_to_video[future])
             try:
                 result = future.result()
                 if result is None:
@@ -496,61 +487,63 @@ def run_strategy_8_pipeline(config: Dict[str, Any]):
                 for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
                 tracker.save_batch(pipeline_name, batch_size=1)
-
             except Exception as e:
                 logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
 
     # Calculate overall metrics
     avg_fps = total_frames / total_time if total_time > 0 else 0
-    overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-    overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = (
-        2 * (overall_prec * overall_rec) / (overall_prec + overall_rec)
-        if (overall_prec + overall_rec) > 0
-        else 0
-    )
+    prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+    rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+    f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
-    # Aggregate additional metrics from detailed data
     p_data = tracker.detailed_data.get(pipeline_name, [])
-    overall_iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
-    overall_mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
-
-    overall_map = (
+    iou = np.mean([d["iou"] for d in p_data]) if p_data else 0.0
+    mem = np.mean([d["memory_usage_mb"] for d in p_data]) if p_data else 0.0
+    map_val = (
         total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
     )
-    overall_dotd = (
+    dotd_val = (
         total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
     )
 
-    summary_metrics = {
+    summary = {
         "total_frames": total_frames,
         "avg_fps": avg_fps,
-        "precision": overall_prec,
-        "recall": overall_rec,
-        "f1_score": overall_f1,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1,
         "tp": total_tp,
         "fp": total_fp,
         "fn": total_fn,
-        "iou": overall_iou,
-        "mAP": overall_map,
-        "dotd": overall_dotd,
-        "memory_usage_mb": overall_mem,
+        "iou": iou,
+        "mAP": map_val,
+        "dotd": dotd_val,
+        "memory_usage_mb": mem,
         "processing_time_sec": total_time,
         "execution_time_sec": time.time() - start_time,
     }
-
-    # Log summary using standard utility
-    vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
-
-    # Update results tracker
-    tracker.update_summary(pipeline_name, summary_metrics, config=config)
-
+    vis_utils.log_pipeline_summary(logger, pipeline_name, summary)
+    tracker.update_summary(pipeline_name, summary, config=config)
     return {
         "pipeline": pipeline_name,
         "total_frames": total_frames,
         "avg_fps": avg_fps,
-        "precision": overall_prec,
-        "recall": overall_rec,
-        "f1_score": overall_f1,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1,
         "execution_time": time.time() - start_time,
     }
+
+
+@register_pipeline("strategy_8")
+def run_strategy_8_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 8: Motion-guided ROI-based detection."""
+    config["use_sahi"] = False
+    return _run_shared_logic(config, "Strategy 8")
+
+
+@register_pipeline("strategy_9")
+def run_strategy_9_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 9: SAHI with temporal scheduling."""
+    config["use_sahi"] = True
+    return _run_shared_logic(config, "Strategy 9")
