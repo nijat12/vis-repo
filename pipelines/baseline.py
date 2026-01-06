@@ -17,7 +17,7 @@ import logging
 import concurrent.futures
 import math
 from collections import defaultdict
-from typing import Dict, Any
+from typing import Dict, Any, List, Set
 
 import cv2
 import torch
@@ -49,7 +49,7 @@ def get_base_predictions(model, img, img_size, conf_thresh, classes):
         classes: List of class IDs to filter
 
     Returns:
-        List of predictions in [x, y, w, h] format
+        List of predictions in [x, y, w, h, score] format
     """
     # YOLO Inference
     results = model(
@@ -63,9 +63,10 @@ def get_base_predictions(model, img, img_size, conf_thresh, classes):
             # Convert to xywh format [x, y, w, h]
             # Use cpu() and numpy() for consistent format
             xyxy_boxes = boxes.xyxy.cpu().numpy()
-            for box in xyxy_boxes:
+            conf_scores = boxes.conf.cpu().numpy()
+            for i, box in enumerate(xyxy_boxes):
                 x1, y1, x2, y2 = box[:4]
-                score = box[4] if len(box) > 4 else 0.0
+                score = conf_scores[i]
                 final_preds.append(
                     [float(x1), float(y1), float(x2 - x1), float(y2 - y1), float(score)]
                 )
@@ -87,12 +88,11 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
         use_nms: Whether to apply global Non-Maximum Suppression
 
     Returns:
-        List of predictions in [x, y, w, h] format
+        List of predictions in [x, y, w, h, score] format
     """
     h, w, _ = img.shape
 
     # Grid Configuration: 6 Cols x 4 Rows = 24 Tiles
-    # For 3840x2160: 3840/6 = 640, 2160/4 = 540. Matches YOLO12 native resolution.
     N_COLS = 6
     N_ROWS = 4
 
@@ -118,7 +118,7 @@ def get_tiled_predictions(model, img, img_size, conf_thresh, classes, use_nms=Tr
     all_boxes = []
     all_scores = []
 
-    # Process ALL 12 tiles in one batch
+    # Process tiles in batches
     CHUNK_SIZE = 12
 
     for i in range(0, len(crops), CHUNK_SIZE):
@@ -235,8 +235,9 @@ def run_baseline(config: Dict[str, Any]):
     total_dotd_sum = 0.0
     total_videos_processed = 0
 
-    # Prepare Args
-    # The config dict is now self-contained, so we can pass it directly.
+    # Track all predictions for visualization
+    all_predictions = {}
+
     worker_args = [(vf, config, gt_data) for vf in video_folders]
 
     with concurrent.futures.ProcessPoolExecutor(
@@ -298,7 +299,9 @@ def run_baseline(config: Dict[str, Any]):
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
 
-                # Add to tracker
+                # Merge predictions
+                all_predictions.update(result.get("predictions", {}))
+
                 for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
 
@@ -308,7 +311,7 @@ def run_baseline(config: Dict[str, Any]):
             except Exception as e:
                 logger.error(f"❌ Error processing {video_name}: {e}", exc_info=True)
 
-    # Calculate overall metrics
+    # Final summary calculations
     avg_fps = total_frames / total_time if total_time > 0 else 0
     overall_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     overall_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
@@ -362,6 +365,7 @@ def run_baseline(config: Dict[str, Any]):
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time,
+        "predictions": all_predictions,
     }
 
 
@@ -405,6 +409,7 @@ def process_video_worker(args):
     vid_all_gts = []
 
     image_results = []
+    predictions_out = {}
 
     vid_start = time.time()
     n_frames = len(images)
@@ -415,6 +420,7 @@ def process_video_worker(args):
     use_nms = config.get("use_nms", False)
 
     for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         img_start_time = time.time()
 
         if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -447,11 +453,12 @@ def process_video_worker(args):
                 config["model_classes"],
             )
 
-        # Persistence omitted in baseline? Original code didn't have tracker in baseline.py
+        # Final Predictions
         final_preds = preds
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
 
         # --- EVALUATION ---
-        key = f"{video_name}/{os.path.basename(img_path)}"
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
         vid_all_preds.append(final_preds)
@@ -507,7 +514,7 @@ def process_video_worker(args):
         # Collect Result
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=os.path.basename(img_path),
+            frame_name=frame_name,
             image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
@@ -546,4 +553,5 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }

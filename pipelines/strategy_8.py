@@ -13,7 +13,8 @@ import datetime
 import sys
 import logging
 import concurrent.futures
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
+from collections import defaultdict
 
 import cv2
 import torch
@@ -150,7 +151,8 @@ def process_video_worker(args):
     video_path, config, gt_data = args
     # Configure logging for worker process
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config["run_name"])
+    run_name = config.get("run_name")
+    logger = logging.getLogger(run_name)
 
     model = load_worker_model(config["model_name"])
 
@@ -164,6 +166,7 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     image_results = []
+    predictions_out = {}
 
     vid_start = time.time()
     n_frames = len(images)
@@ -174,6 +177,7 @@ def process_video_worker(args):
     use_sahi = config.get("use_sahi", False)
 
     for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         img_start_time = time.time()
 
         if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -188,7 +192,7 @@ def process_video_worker(args):
             image_results.append(
                 csv_utils.create_image_result(
                     video_name=video_name,
-                    frame_name=os.path.basename(img_path),
+                    frame_name=frame_name,
                     image_path=img_path,
                     predictions=[],
                     ground_truths=[],
@@ -247,24 +251,22 @@ def process_video_worker(args):
         prev_gray = curr_gray  # Always update prev_gray for motion compensation
 
         # Tracking
-        # The tracker is updated regardless, so it can maintain internal state.
-        # However, for metric calculation for skipped frames, we set final_preds explicitly to []
-        # to ensure no FNs are counted if no detection was intended.
         tracker_output_for_frame = obj_tracker.update(raw_detections)
 
+        # Final predictions
+        final_preds = tracker_output_for_frame
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
+
         # Evaluation
-        key = f"{video_name}/{os.path.basename(img_path)}"
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])  # Get GTs for the current frame
 
-        final_preds = []
         img_tp = 0
         img_fp = 0
         img_fn = 0
         img_avg_iou = 0.0
 
         if frame_was_detected:  # This frame was chosen for detection
-            final_preds = tracker_output_for_frame  # Use predictions from tracker
-
             # Store for mAP calc (only if detection was active)
             vid_all_preds.append(final_preds)
             vid_all_gts.append(gts)
@@ -312,24 +314,12 @@ def process_video_worker(args):
                     matched_gt_indices.add(best_idx)
 
             img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-        else:  # This is a skipped frame, no detection was performed or intended for evaluation
-            # For skipped frames, we explicitly ensure metrics are zero.
-            # No predictions are "made" from the perspective of this pipeline.
-            final_preds = []  # No predictions for skipped frames
-
-            # Store for mAP calc. Even if no detections, we need a corresponding entry for GTs.
-            # If final_preds is empty, mAP calculation will naturally handle this.
-            vid_all_preds.append(final_preds)  # Empty predictions for skipped frame
-            vid_all_gts.append(
-                gts
-            )  # GTs exist, but won't contribute to TP/FP/FN for this frame.
-
-            # Crucially, for skipped frames, no FNs are counted.
+        else:  # This is a skipped frame
+            vid_all_preds.append(final_preds)
+            vid_all_gts.append(gts)
             img_tp = 0
             img_fp = 0
             img_fn = 0
-            # Note: vid_tp, vid_fp, vid_fn are not incremented for skipped frames.
-            # This aligns with the "don't count FNs for skipped frames" requirement.
 
         # Calculate processing time and memory for this image
         img_processing_time = time.time() - img_start_time
@@ -337,7 +327,7 @@ def process_video_worker(args):
 
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=os.path.basename(img_path),
+            frame_name=frame_name,
             image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
@@ -351,16 +341,12 @@ def process_video_worker(args):
         image_results.append(image_result)
 
     vid_time = time.time() - vid_start
-    # n_frames here still means total frames, which is correct.
-    # fps calculation uses n_frames and vid_time, which is good.
-    # Overall prec/rec/f1 uses accumulated vid_tp, vid_fp, vid_fn which is now correctly handled.
     fps = n_frames / vid_time if vid_time > 0 else 0
     prec = vid_tp / (vid_tp + vid_fp) if (vid_tp + vid_fp) > 0 else 0
     rec = vid_tp / (vid_tp + vid_fn) if (vid_tp + vid_fn) > 0 else 0
     f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
     # Calculate mAP and DotD for video
-    # vid_all_preds and vid_all_gts are populated for all frames, with predictions being empty for skipped ones.
     vid_map = vis_utils.calculate_video_map(vid_all_preds, vid_all_gts)
     vid_dotd = vis_utils.calculate_avg_dotd(vid_dotd_list)
 
@@ -378,6 +364,7 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
@@ -415,9 +402,12 @@ def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
     )
 
     if Config.SHOULD_LIMIT_VIDEO:
-        video_folders = video_folders[
-            : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
-        ]
+        if Config.SHOULD_LIMIT_VIDEO == 1:
+            video_folders = [video_folders[i] for i in Config.VIDEO_INDEXES]
+        else:
+            video_folders = video_folders[
+                : min(len(video_folders), Config.SHOULD_LIMIT_VIDEO)
+            ]
 
     if not video_folders:
         raise RuntimeError(f"No video folders found in {Config.LOCAL_TRAIN_DIR}")
@@ -429,6 +419,7 @@ def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
     tracker = csv_utils.get_results_tracker()
     total_tp, total_fp, total_fn, total_time, total_frames = 0, 0, 0, 0, 0
     total_map_sum, total_dotd_sum, total_videos_processed = 0.0, 0.0, 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
 
@@ -439,7 +430,8 @@ def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
             executor.submit(process_video_worker, args): args[0] for args in worker_args
         }
         for future in concurrent.futures.as_completed(future_to_video):
-            video_name = os.path.basename(future_to_video[future])
+            video_path = future_to_video[future]
+            video_name = os.path.basename(video_path)
             try:
                 result = future.result()
                 if result is None:
@@ -483,6 +475,8 @@ def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
                 for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
@@ -532,6 +526,7 @@ def _run_shared_logic(config: Dict[str, Any], pipeline_title: str):
         "recall": rec,
         "f1_score": f1,
         "execution_time": time.time() - start_time,
+        "predictions": all_predictions,
     }
 
 

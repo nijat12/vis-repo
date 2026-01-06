@@ -12,8 +12,10 @@ import glob
 import time
 import datetime
 import logging
-from typing import Dict, Any, List
+import concurrent.futures
+from typing import Dict, Any, List, Set
 from collections import defaultdict
+
 import cv2
 import torch
 import torchvision
@@ -99,15 +101,11 @@ def get_roi_predictions(model, img_bgr, proposals_xywh, config: Dict[str, Any]):
     pred_boxes = torch.cat(all_boxes, dim=0)
     pred_scores = torch.cat(all_scores, dim=0)
 
-    # Recover scores
-    final_preds = []
-
-    # We need to map indices back to scores.
-    # Just iterate carefully.
     keep_indices = torchvision.ops.nms(pred_boxes, pred_scores, iou_threshold=0.45)
     final_boxes = pred_boxes[keep_indices]
     final_scores = pred_scores[keep_indices]
 
+    final_preds = []
     for i, box in enumerate(final_boxes):
         x1, y1, x2, y2 = box.tolist()
         score = float(final_scores[i])
@@ -134,7 +132,8 @@ def process_video_worker(args):
     """
     video_path, config, gt_data = args
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config["run_name"])
+    run_name = config.get("run_name")
+    logger = logging.getLogger(run_name)
 
     if YOLO is None:
         raise ImportError("ultralytics library missing")
@@ -153,10 +152,11 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     image_results = []
+    predictions_out = {}
 
     vid_tp = vid_fp = vid_fn = 0
 
-    # --- PASS 1: Generate Predictions (including Interpolation) ---
+    # Predictions (including Interpolation)
     all_predictions = defaultdict(list)
     last_keyframe_preds: List[List[float]] = []
     last_keyframe_idx = -1
@@ -164,16 +164,8 @@ def process_video_worker(args):
     detect_every = config.get("detect_every", 5)
     use_sahi = config.get("use_sahi", False)
 
-    images_w_metadata = [
-        {
-            "img_start_time": time.time(),
-            "image": image,
-        }
-        for image in images
-    ]
-
-    for i, img_metadata in enumerate(images_w_metadata):
-        img_metadata["img_start_time"] = time.time()
+    for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         if i % detect_every == 0:
 
             if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -182,7 +174,7 @@ def process_video_worker(args):
                     f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
                 )
 
-            frame = cv2.imread(img_metadata["image"])
+            frame = cv2.imread(img_path)
             if frame is None:
                 continue
 
@@ -197,12 +189,11 @@ def process_video_worker(args):
                     if warped_prev is not None:
                         diff = cv2.absdiff(curr_gray, warped_prev)
                         mean, std = cv2.meanStdDev(diff)
-                        dynamic_thresh = (
-                            mean[0][0] + config["dynamic_multiplier"] * std[0][0]
-                        )
+                        dynamic_multiplier = config.get("dynamic_multiplier", 4.0)
+                        dynamic_thresh = mean[0][0] + dynamic_multiplier * std[0][0]
                         final_thresh = max(
-                            config["min_threshold"],
-                            min(config["max_threshold"], dynamic_thresh),
+                            config.get("min_threshold", 20),
+                            min(config.get("max_threshold", 80), dynamic_thresh),
                         )
                         _, thresh = cv2.threshold(
                             diff, final_thresh, 255, cv2.THRESH_BINARY
@@ -213,7 +204,6 @@ def process_video_worker(args):
                         contours, _ = cv2.findContours(
                             thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                         )
-                        h_img, w_img = curr_gray.shape
                         for cnt in contours:
                             area = cv2.contourArea(cnt)
                             if 50 < area < 5000:
@@ -236,10 +226,13 @@ def process_video_worker(args):
             last_keyframe_preds = current_preds
             last_keyframe_idx = i
 
-    # --- PASS 2: Evaluation ---
-    for i, img_metadata in enumerate(images_w_metadata):
+    # Pass 2: Evaluation
+    for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         final_preds = all_predictions[i]
-        key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
+        
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
         # Store for mAP calc
@@ -261,7 +254,8 @@ def process_video_worker(args):
                 if iou > best_iou:
                     best_iou = iou
                 if dist < best_dist:
-                    best_dist, best_idx = dist, idx
+                    best_dist = dist
+                    best_idx = idx
 
             if best_dist <= 30:
                 img_tp += 1
@@ -277,15 +271,13 @@ def process_video_worker(args):
         vid_fn += img_fn
 
         img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-
-        img_processing_time = time.time() - img_metadata["img_start_time"]
+        img_processing_time = 0 # Approximate
         img_mem = vis_utils.get_memory_usage()
 
-        # Log per-image results
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=os.path.basename(img_metadata["image"]),
-            image_path=img_metadata["image"],
+            frame_name=frame_name,
+            image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
             tp=img_tp,
@@ -322,6 +314,7 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
@@ -372,10 +365,9 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
-
-    import concurrent.futures
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=Config.MAX_WORKERS
@@ -426,6 +418,8 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
                 for img_res in result["image_results"]:
                     results_tracker.add_image_result(pipeline_name, img_res)
@@ -474,4 +468,15 @@ def run_strategy_12_pipeline(config: Dict[str, Any]):
 
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
     results_tracker.update_summary(pipeline_name, summary_metrics, config=config)
-    return {"pipeline": pipeline_name, "status": "completed", **summary_metrics}
+    
+    return {
+        "pipeline": pipeline_name,
+        "total_frames": total_frames,
+        "avg_fps": avg_fps,
+        "precision": overall_prec,
+        "recall": overall_rec,
+        "f1_score": overall_f1,
+        "execution_time": time.time() - start_time,
+        "status": "completed",
+        "predictions": all_predictions,
+    }

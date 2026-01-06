@@ -10,3 +10,5 @@ private_*
 todo.md
 runtime_config.json
 .venv
+images/*
+predictions/*

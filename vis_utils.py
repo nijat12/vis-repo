@@ -804,3 +804,244 @@ def log_pipeline_summary(
     # we can just rely on the specific metrics passed.
 
     logger.info("=" * 50 + "\n")
+
+
+def save_predictions(
+    predictions: Dict[str, List[List[float]]],
+    strategy_name: str,
+    output_dir: str = Config.PREDICTIONS_DIR,
+):
+    """
+    Saves predictions dictionary to a JSON file.
+    Format: output_dir/strategy_name.json
+    """
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, f"{strategy_name}.json")
+        with open(save_path, "w") as f:
+            json.dump(predictions, f)
+        logger.info(f"✅ Predictions saved to {save_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save predictions for {strategy_name}: {e}")
+
+
+def load_predictions(strategy_name: str, input_dir: str = Config.PREDICTIONS_DIR) -> Dict:
+    """Loads predictions from a JSON file."""
+    path = os.path.join(input_dir, f"{strategy_name}.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def generate_comparison_images(
+    strategy_names: List[str],
+    output_dir: str = Config.IMAGES_DIR,
+    max_samples: int = Config.MAX_IMAGES_PER_VIDEO,
+):
+    """
+    Loads predictions for multiple strategies and generates comparison images.
+    Only saves images for frames that have at least one True Positive (TP)
+    in at least one of the provided strategies.
+    """
+    logger.info(f"🎨 Generating comparison images for: {strategy_names}")
+
+    # 1. Load all predictions
+    all_preds = {name: load_predictions(name) for name in strategy_names}
+    gt_data = load_json_ground_truth(Config.LOCAL_JSON_PATH)
+
+    # 2. Identify frames with at least one True Positive across ANY strategy
+    # Map: video -> set(frame_names)
+    tp_frames_by_video = defaultdict(set)
+    
+    for name, preds_dict in all_preds.items():
+        for key, preds in preds_dict.items():
+            if "/" not in key:
+                continue
+            
+            vid, frame = key.split("/", 1)
+            gts = gt_data.get(key, [])
+            if not gts or not preds:
+                continue
+                
+            # Check if any prediction in this frame is a TP
+            has_tp = False
+            matched_gt = set()
+            for p_box in preds:
+                best_dist = float("inf")
+                best_gt_idx = -1
+                for idx, g_box in enumerate(gts):
+                    if idx in matched_gt:
+                        continue
+                    d = calculate_center_distance(p_box, g_box)
+                    if d < best_dist:
+                        best_dist = d
+                        best_gt_idx = idx
+                
+                if best_dist <= 30: # Established TP threshold
+                    has_tp = True
+                    break
+            
+            if has_tp:
+                tp_frames_by_video[vid].add(frame)
+
+    # 3. Process each video and its TP frames
+    for video_name, frames in tp_frames_by_video.items():
+        video_path = os.path.join(Config.LOCAL_TRAIN_DIR, video_name)
+        if not os.path.exists(video_path):
+            logger.warning(f"⚠️ Video path not found: {video_path}")
+            continue
+
+        # Prune/Sample frames
+        frame_list = sorted(list(frames))
+        if len(frame_list) > max_samples:
+            import random
+            frame_list = random.sample(frame_list, max_samples)
+
+        logger.info(f"   [{video_name}] Visualizing {len(frame_list)} frames with hits.")
+
+        for frame_name in frame_list:
+            img_path = os.path.join(video_path, frame_name)
+            img = cv2.imread(img_path)
+            if img is None:
+                continue
+
+            gts = gt_data.get(f"{video_name}/{frame_name}", [])
+
+            # Generate image for each strategy
+            for name in strategy_names:
+                preds = all_preds[name].get(f"{video_name}/{frame_name}", [])
+                save_visualization(
+                    img,
+                    preds,
+                    gts,
+                    strategy_name=name,
+                    video_name=video_name,
+                    frame_name=frame_name,
+                    output_dir=output_dir
+                )
+
+
+def draw_arrow_pointer(
+    img: np.ndarray, x: int, y: int, w: int, h: int, color: Tuple[int, int, int]
+):
+    """
+    Draws a pointing arrow above or below the bounding box.
+    Used to highlight small objects in large frames.
+    """
+    center_x = int(x + w // 2)
+    gap = 20
+    arrow_len = 100
+
+    if y < (gap + arrow_len):
+        # Draw arrow below, pointing up to the box
+        start_point = (center_x, y + h + gap + arrow_len)
+        end_point = (center_x, y + h + gap)
+    else:
+        # Draw arrow above, pointing down to the box
+        start_point = (center_x, y - gap - arrow_len)
+        end_point = (center_x, y - gap)
+
+    cv2.arrowedLine(
+        img,
+        start_point,
+        end_point,
+        color,
+        thickness=10,
+        tipLength=0.3,
+        line_type=cv2.LINE_AA,
+    )
+
+
+def draw_detections(
+    img: np.ndarray, detections: List[List[float]], ground_truths: List[List[float]]
+) -> np.ndarray:
+    """
+    Draws bounding boxes and arrows on the image.
+    - Ground Truth: Yellow Box
+    - Correct Prediction (TP): Green Box + Green Arrow
+    - False Prediction (FP): Red Box
+    """
+    vis_img = img.copy()
+
+    # Draw Ground Truths (Yellow)
+    for gt in ground_truths:
+        x, y, w, h = map(int, gt[:4])
+        cv2.rectangle(vis_img, (x, y), (x + w, y + h), (0, 255, 255), 2)
+
+    # Match predictions to GT to decide coloring
+    matched_gt = set()
+    matched_preds = set()
+
+    # Simple matching logic (greedy by distance, similar to metrics)
+    for i, pred in enumerate(detections):
+        best_dist = float("inf")
+        best_gt_idx = -1
+        for j, gt in enumerate(ground_truths):
+            if j in matched_gt:
+                continue
+            dist = calculate_center_distance(pred, gt)
+            if dist < best_dist:
+                best_dist = dist
+                best_gt_idx = j
+
+        if best_dist <= 30:  # Distance threshold
+            matched_gt.add(best_gt_idx)
+            matched_preds.add(i)
+
+    # Draw Predictions
+    for i, pred in enumerate(detections):
+        x, y, w, h = map(int, pred[:4])
+        score = pred[4] if len(pred) > 4 else 1.0
+
+        if i in matched_preds:
+            # Hit (TP): Green
+            color = (0, 255, 0)
+            draw_arrow_pointer(vis_img, x, y, w, h, color)
+        else:
+            # Distraction (FP): Red
+            color = (0, 0, 255)
+
+        cv2.rectangle(vis_img, (x, y), (x + w, y + h), color, 2)
+
+        # Add label
+        label = f"{score:.2f}"
+        cv2.putText(
+            vis_img,
+            label,
+            (x, max(y - 5, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    return vis_img
+
+
+def save_visualization(
+    img: np.ndarray,
+    detections: List[List[float]],
+    ground_truths: List[List[float]],
+    strategy_name: str,
+    video_name: str,
+    frame_name: str,
+    output_dir: str = Config.IMAGES_DIR,
+):
+    """
+    Draws detections on the image and saves it to the output directory.
+    Format: output_dir/strategy_name/video_name/frame_name
+    """
+    try:
+        # Draw
+        vis_img = draw_detections(img, detections, ground_truths)
+
+        # Prepare directory: images/strategy/video/
+        save_dir = os.path.join(output_dir, strategy_name, video_name)
+        os.makedirs(save_dir, exist_ok=True)
+
+        save_path = os.path.join(save_dir, frame_name)
+        cv2.imwrite(save_path, vis_img)
+    except Exception as e:
+        logger.error(f"❌ Failed to save visualization for {frame_name}: {e}")

@@ -13,7 +13,10 @@ import glob
 import time
 import datetime
 import logging
-from typing import Dict, Any
+import concurrent.futures
+from typing import Dict, Any, List, Set
+from collections import defaultdict
+
 import cv2
 import torch
 import torchvision
@@ -97,6 +100,7 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     image_results = []
+    predictions_out = {}
 
     vid_start = time.time()
     n_frames = len(images)
@@ -116,6 +120,7 @@ def process_video_worker(args):
     )
 
     for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         img_start_time = time.time()
 
         if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -224,10 +229,10 @@ def process_video_worker(args):
                     )
 
         prev_gray = curr_gray
+        predictions_out[f"{video_name}/{frame_name}"] = raw_detections
 
         # --- EVALUATION ---
-        img_filename = os.path.basename(img_path)
-        key = f"{video_name}/{img_filename}"
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
         # Store for mAP calc
@@ -285,7 +290,7 @@ def process_video_worker(args):
 
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=img_filename,
+            frame_name=frame_name,
             image_path=img_path,
             predictions=raw_detections,
             ground_truths=gts,
@@ -324,6 +329,7 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
@@ -378,10 +384,9 @@ def run_strategy_10_pipeline(config: Dict[str, Any]):
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
-
-    import concurrent.futures
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=Config.MAX_WORKERS
@@ -436,8 +441,10 @@ def run_strategy_10_pipeline(config: Dict[str, Any]):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
-                for img_res in result["image_'results"]:
+                for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
                 tracker.save_batch(pipeline_name, batch_size=1)
 
@@ -497,4 +504,5 @@ def run_strategy_10_pipeline(config: Dict[str, Any]):
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time_global,
+        "predictions": all_predictions,
     }

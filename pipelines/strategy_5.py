@@ -15,12 +15,15 @@ import glob
 import time
 import datetime
 import logging
+import concurrent.futures
+from typing import Dict, Any, List, Set
+from collections import defaultdict
+
 import cv2
 import torch
 import torchvision
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
 
 try:
     from ultralytics import YOLO
@@ -140,7 +143,8 @@ def process_video_worker(args):
     """
     video_path, config, gt_data = args
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config["run_name"])
+    run_name = config.get("run_name")
+    logger = logging.getLogger(run_name)
     if YOLO is None:
         raise ImportError("ultralytics library missing")
 
@@ -156,6 +160,7 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     image_results = []
+    predictions_out = {}
 
     vid_start = time.time()
     n_frames = len(images)
@@ -165,6 +170,7 @@ def process_video_worker(args):
     )
 
     for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         img_start_time = time.time()
 
         if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -188,10 +194,11 @@ def process_video_worker(args):
                 # 2. Dynamic Thresholding (Notebook Logic)
                 diff = cv2.absdiff(curr_gray, warped_prev)
                 mean, std = cv2.meanStdDev(diff)
-                dynamic_thresh = mean[0][0] + config["dynamic_multiplier"] * std[0][0]
+                dynamic_multiplier = config.get("dynamic_multiplier", 4.0)
+                dynamic_thresh = mean[0][0] + dynamic_multiplier * std[0][0]
                 final_thresh = max(
-                    config["min_threshold"],
-                    min(config["max_threshold"], dynamic_thresh),
+                    config.get("min_threshold", 20),
+                    min(config.get("max_threshold", 80), dynamic_thresh),
                 )
                 _, thresh = cv2.threshold(diff, final_thresh, 255, cv2.THRESH_BINARY)
 
@@ -229,9 +236,10 @@ def process_video_worker(args):
 
         # 6. Persistence Tracking
         final_preds = obj_tracker.update(raw_detections)
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
 
         # --- EVALUATION ---
-        key = f"{video_name}/{os.path.basename(img_path)}"
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
         vid_all_preds.append(final_preds)
@@ -290,7 +298,7 @@ def process_video_worker(args):
         # Collect Result
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=os.path.basename(img_path),
+            frame_name=frame_name,
             image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
@@ -326,11 +334,11 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
-@register_pipeline("strategy_5")
-def run_strategy_5_pipeline(config: Dict[str, Any]):
+def _run_shared_logic(config: Dict[str, Any]):
     """Execute Strategy 5 pipeline: GMC + Dynamic Threshold + YOLO Refiner."""
     pipeline_name = config["run_name"]
     logger = logging.getLogger(pipeline_name)
@@ -344,9 +352,6 @@ def run_strategy_5_pipeline(config: Dict[str, Any]):
 
     logger.info(f"⏳ Loading YOLO Model: {config['model_name']}...")
     try:
-        # Model loading is now handled by the worker function, but we still check here
-        # to ensure the model name is valid and ultralytics is installed.
-        # We don't actually load it into the main process.
         _ = YOLO(config["model_name"])
         logger.info(f"✅ Model {config['model_name']} check passed.")
     except Exception as e:
@@ -384,10 +389,9 @@ def run_strategy_5_pipeline(config: Dict[str, Any]):
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
-
-    import concurrent.futures
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=Config.MAX_WORKERS
@@ -442,6 +446,8 @@ def run_strategy_5_pipeline(config: Dict[str, Any]):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
                 for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
@@ -501,4 +507,11 @@ def run_strategy_5_pipeline(config: Dict[str, Any]):
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time,
+        "predictions": all_predictions,
     }
+
+
+@register_pipeline("strategy_5")
+def run_strategy_5_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 5 pipeline."""
+    return _run_shared_logic(config)

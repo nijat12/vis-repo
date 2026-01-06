@@ -12,11 +12,15 @@ import glob
 import time
 import datetime
 import logging
+import concurrent.futures
+from typing import Dict, Any, List, Set
+from collections import defaultdict
+
 import cv2
 import torch
 import torchvision
 import numpy as np
-from typing import Dict, Any
+import pandas as pd
 
 try:
     from ultralytics import YOLO
@@ -58,7 +62,6 @@ def get_filtered_roi_predictions(
     3. Motion-gating (optional) to skip empty skies.
     4. Hit verification with 640px detector.
     """
-    logger = logging.getLogger("pipelines.strategy_11.predictions")
     if det_model is None or cls_model is None:
         return []
 
@@ -79,7 +82,7 @@ def get_filtered_roi_predictions(
     for x0, y0, x1, y1 in grid_small:
         if motion_mask is not None:
             m_pixels = cv2.countNonZero(motion_mask[y0:y1, x0:x1])
-            if m_pixels < 5:  # Slightly lower threshold for tiny birds
+            if m_pixels < 5:
                 continue
         active_crops.append(img_bgr[y0:y1, x0:x1])
         active_info.append((x0, y0, config["cls_img_size"]))
@@ -93,8 +96,6 @@ def get_filtered_roi_predictions(
         active_info.append((x0, y0, config["cls_scale2_size"]))
 
     if not active_crops:
-        if frame_idx % 100 == 0:
-            logger.debug(f"Frame {frame_idx}: No active crops after motion gating.")
         return []
 
     # 3. Stage 1: Batch Classification (imgsz=224)
@@ -133,20 +134,9 @@ def get_filtered_roi_predictions(
             x0, y0, sz = active_info[idx]
             cx, cy = x0 + sz / 2, y0 + sz / 2
             verification_centers.append((cx, cy))
-            logger.debug(
-                f"Frame {frame_idx}: Hit! Tile at ({x0}, {y0}) classified as '{top1_name}' ({top1_conf:.2f})"
-            )
-        elif top1_conf > 0.3:  # Log interesting near-misses for debug
-            logger.debug(
-                f"Frame {frame_idx}: Candidate at ({active_info[idx][0]}, {active_info[idx][1]}) was '{top1_name}' ({top1_conf:.2f})"
-            )
 
     if not verification_centers:
         return []
-
-    logger.info(
-        f"Frame {frame_idx}: {len(verification_centers)} potential bird regions found by classifier."
-    )
 
     # 4. Stage 2: Verification with 640px Detector
     final_verification_crops = []
@@ -209,12 +199,8 @@ def get_filtered_roi_predictions(
 
             all_boxes.append(shifted_boxes)
             all_scores.append(local_scores)
-            logger.info(f"Frame {frame_idx}: Detector CONFIRMED {len(boxes)} bird(s).")
 
     if not all_boxes:
-        logger.debug(
-            f"Frame {frame_idx}: Detector rejected all {len(final_verification_crops)} classifier proposals."
-        )
         return []
 
     pred_boxes = torch.cat(all_boxes, dim=0)
@@ -254,7 +240,8 @@ def process_video_worker(args):
     """
     video_path, config, gt_data = args
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config["run_name"])
+    run_name = config.get("run_name")
+    logger = logging.getLogger(run_name)
 
     if YOLO is None:
         raise ImportError("ultralytics library missing")
@@ -273,6 +260,7 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     image_results = []
+    predictions_out = {}
 
     vid_start = time.time()
     n_frames = len(images)
@@ -285,9 +273,10 @@ def process_video_worker(args):
         dist_thresh=100, max_frames_to_skip=config["detect_every"], min_hits=1
     )
 
-    last_final_preds = []  # Persistent results across skipped frames
+    last_final_preds = []
 
     for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         img_start_time = time.time()
 
         if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -303,9 +292,9 @@ def process_video_worker(args):
         if use_sahi:
             # When using SAHI, we use the main detection model directly
             raw_detections = vis_utils.get_sahi_predictions(det_model, frame, config)
+            final_preds = raw_detections
         else:
             curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Stage 1: Classifier-Gated Detection
             if i % config["detect_every"] == 0:
                 motion_mask = None
                 if prev_gray is not None:
@@ -328,15 +317,15 @@ def process_video_worker(args):
                 last_final_preds = obj_tracker.update(raw_detections)
 
             prev_gray = curr_gray
-        # Use persistent predictions for all frames
-        final_preds = last_final_preds
+            # Use persistent predictions for all frames
+            final_preds = last_final_preds
+
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
 
         # Evaluation
-        img_filename = os.path.basename(img_path)
-        key = f"{video_name}/{img_filename}"
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
-        # Store for mAP calc
         vid_all_preds.append(final_preds)
         vid_all_gts.append(gts)
 
@@ -354,8 +343,7 @@ def process_video_worker(args):
                     best_dist = d
                     best_idx = g_idx
 
-            # Distance threshold for TP match (increased to 100 for 4K)
-            if best_dist <= 100:
+            if best_dist <= 30:
                 vid_tp += 1
                 img_tp += 1
                 vid_dotd_list.append(best_dist)
@@ -376,7 +364,6 @@ def process_video_worker(args):
             for g_idx, g_box in enumerate(gts):
                 if g_idx in matched_gt_indices:
                     continue
-                # p_box is [x,y,w,h,score]
                 iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                 if iou > best_iou:
                     best_iou = iou
@@ -391,7 +378,7 @@ def process_video_worker(args):
 
         image_result = csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=img_filename,
+            frame_name=frame_name,
             image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
@@ -429,12 +416,13 @@ def process_video_worker(args):
         "dotd": vid_dotd,
         "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
 @register_pipeline("strategy_11")
 def run_strategy_11_pipeline(config: Dict[str, Any]):
-    """Execute Strategy 11: ROI + Classifier + Detector."""
+    """Execute Strategy 11."""
     pipeline_name = config["run_name"]
     logger = logging.getLogger(pipeline_name)
     logger.info(f"--- STARTING STRATEGY 11 (PARALLEL): {pipeline_name} ---")
@@ -484,10 +472,9 @@ def run_strategy_11_pipeline(config: Dict[str, Any]):
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
-
-    import concurrent.futures
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=Config.MAX_WORKERS
@@ -542,6 +529,8 @@ def run_strategy_11_pipeline(config: Dict[str, Any]):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
                 for img_res in result["image_results"]:
                     tracker.add_image_result(pipeline_name, img_res)
@@ -568,7 +557,7 @@ def run_strategy_11_pipeline(config: Dict[str, Any]):
         total_map_sum / total_videos_processed if total_videos_processed > 0 else 0.0
     )
     overall_dotd = (
-        total_dotd_sum / total_videos_processed if total_videos_processed > 0 else 0.0
+        total_dotd_sum / total_videos_processed if total_dotd_sum > 0 else 0.0
     )
 
     summary_metrics = {
@@ -599,4 +588,5 @@ def run_strategy_11_pipeline(config: Dict[str, Any]):
         "recall": overall_rec,
         "f1_score": overall_f1,
         "execution_time": time.time() - start_time_global,
+        "predictions": all_predictions,
     }

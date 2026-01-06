@@ -262,6 +262,31 @@ class Config:
     # Local log file
     LOG_FILE: str = "main.log"
 
+    # ==========================================
+    # VISUALIZATION
+    # ==========================================
+    # Generate visualization images for Hits/Distractions
+    GENERATE_IMAGES: bool = False
+    IMAGES_DIR: str = "images"
+    PREDICTIONS_DIR: str = "predictions"
+    MAX_IMAGES_PER_VIDEO: int = 20
+
+    @classmethod
+    def get_runtime_generate_images(cls) -> bool:
+        """
+        Check if image generation is enabled, checking runtime_config.json first.
+        """
+        runtime_config_path = os.path.join(cls.PROJECT_ROOT, "runtime_config.json")
+        if os.path.exists(runtime_config_path):
+            try:
+                with open(runtime_config_path, "r") as f:
+                    data = json.load(f)
+                    return data.get("GENERATE_IMAGES", cls.GENERATE_IMAGES)
+            except Exception as e:
+                print(f"⚠️  Error reading runtime_config.json: {e}")
+
+        return cls.GENERATE_IMAGES
+
     @classmethod
     def validate(cls) -> None:
         """Validate configuration and raise errors if invalid."""

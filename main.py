@@ -54,11 +54,8 @@ logger = logging.getLogger(__name__)
 def generate_run_configurations() -> List[Dict[str, Any]]:
     """
     Generates a list of all pipeline run configurations based on settings.
-    This creates permutations for conf_thresh, sahi, interpolation, etc.
     """
     run_configs = []
-
-    # Pipelines enabled in runtime_config.json
     enabled_pipelines = Config.get_runtime_pipelines()
 
     for base_pipeline_name in enabled_pipelines:
@@ -68,13 +65,11 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
 
             # --- SAHI vs. Legacy Tiling Variants ---
             sahi_variants = Config.SAHI_VARIANTS
-            if (
-                base_pipeline_name == "baseline_base"
-                or base_pipeline_name == "strategy_12"
-            ):
+            if base_pipeline_name in ["baseline_base", "strategy_12"]:
                 sahi_variants = [False, True]
             else:
                 sahi_variants = [False]
+                
             for use_sahi in sahi_variants:
 
                 # Determine effective name for the run
@@ -82,19 +77,10 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
                 if base_pipeline_name == "strategy_12":
                     effective_name = f"strategy_12{'b' if use_sahi else 'a'}_{conf_str}"
                 elif base_pipeline_name == "baseline_base":
-                    effective_name = (
-                        f"strategy_4_{conf_str}"
-                        if use_sahi
-                        else f"baseline_base_{conf_str}"
-                    )
+                    effective_name = f"strategy_4_{conf_str}" if use_sahi else f"baseline_base_{conf_str}"
                 else:
-                    effective_name = (
-                        f"{effective_name}_{conf_str}_sahi"
-                        if use_sahi
-                        else f"{effective_name}_{conf_str}"
-                    )
+                    effective_name = f"{effective_name}_{conf_str}_sahi" if use_sahi else f"{effective_name}_{conf_str}"
 
-                # --- Base Config ---
                 run_config = {
                     "base_pipeline": base_pipeline_name,
                     "conf_thresh": conf,
@@ -104,14 +90,7 @@ def generate_run_configurations() -> List[Dict[str, Any]]:
                 # --- Interpolation Variants (for Strategy 13) ---
                 if "strategy_13" in base_pipeline_name:
                     for use_interp in [False, True]:
-                        interp_run_name = effective_name
-                        if use_interp:
-                            interp_run_name = f"strategy_13b"
-                            interp_run_name += f"_{conf_str}"
-                        else:
-                            interp_run_name = f"strategy_13a"
-                            interp_run_name += f"_{conf_str}"
-
+                        interp_run_name = f"strategy_13{'b' if use_interp else 'a'}_{conf_str}"
                         interp_config = run_config.copy()
                         interp_config["run_name"] = interp_run_name
                         interp_config["use_interpolation"] = use_interp
@@ -144,28 +123,10 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
+    
     try:
-        import cv2
-
-        cv2.setNumThreads(1)
-    except ImportError:
-        pass
-
-    try:
-        import torch
-
-        torch.set_num_threads(1)
-    except ImportError:
-        pass
-
-    try:
-        # Re-initialize logging with a unique file for this specific run
         log_filename = f"{run_name}.log"
         vis_utils.setup_logging(log_name=log_filename)
-
         logger.info(f"🚀 Starting pipeline: {run_name.upper()}")
 
         # --- Dynamically build the final config ---
@@ -177,13 +138,6 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
         if final_config.get("use_sahi", False):
             final_config.update(Config.SAHI_CONFIG)
 
-        logger.info(
-            f"   Config: { {k: v for k, v in final_config.items() if k != 'run_name'} }"
-        )
-
-        start_time = time.time()
-
-        # Get and run the pipeline function, passing the final config
         pipeline_func = get_pipeline(base_pipeline)
 
         # Start QueueListener for intra-pipeline worker logs
@@ -191,9 +145,7 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
         root_logger = logging.getLogger()
         queue_listener = None
         if log_queue:
-            queue_listener = QueueListener(
-                log_queue, *root_logger.handlers, respect_handler_level=True
-            )
+            queue_listener = QueueListener(log_queue, *root_logger.handlers, respect_handler_level=True)
             queue_listener.start()
 
         try:
@@ -202,22 +154,12 @@ def run_single_pipeline(run_config: Dict[str, Any]) -> Dict[str, Any]:
             if queue_listener:
                 queue_listener.stop()
 
-        execution_time = time.time() - start_time
-        results["execution_time_sec"] = execution_time
-
         logger.info(f"✅ Pipeline {run_name.upper()} COMPLETED")
-        logger.info(f"   Execution time: {execution_time:.2f} seconds")
-
         return results
 
     except Exception as e:
         logger.error(f"❌ Pipeline {run_name} FAILED: {e}", exc_info=True)
-        return {
-            "pipeline": run_name,
-            "status": "failed",
-            "error": str(e),
-            "execution_time_sec": 0,
-        }
+        return {"pipeline": run_name, "status": "failed", "error": str(e)}
 
 
 def main():
@@ -231,8 +173,6 @@ def main():
         vis_utils.setup_logging()
         logger.info("VIS PIPELINE - STARTING")
 
-        # Validate configuration
-        logger.info("📋 Validating configuration...")
         Config.validate()
 
         # --- Generate all run configurations ---
@@ -271,6 +211,7 @@ def main():
 
         failed_pipelines = []
         all_pipeline_results = []
+        completed_strategy_names = []
 
         try:
             for run_config in all_run_configs:
@@ -279,67 +220,34 @@ def main():
                 try:
                     results = run_single_pipeline(run_config)
                     all_pipeline_results.append(results)
+                    
+                    if results.get("status") != "failed":
+                        strategy_name = run_config["run_name"]
+                        completed_strategy_names.append(strategy_name)
+                        # Save predictions to JSON
+                        if "predictions" in results:
+                            vis_utils.save_predictions(results["predictions"], strategy_name)
 
                 except Exception as e:
-                    logger.error(
-                        f"❌ Pipeline {run_config['run_name']} failed: {e}",
-                        exc_info=True,
-                    )
+                    logger.error(f"❌ Pipeline {run_config['run_name']} failed: {e}", exc_info=True)
                     failed_pipelines.append(run_config["run_name"])
-                    all_pipeline_results.append(
-                        {
-                            "pipeline": run_config["run_name"],
-                            "status": "failed",
-                            "error": str(e),
-                            "execution_time_sec": 0,
-                        }
-                    )
         finally:
             manager.shutdown()
 
-        if failed_pipelines:
-            logger.error(
-                f"❌ {len(failed_pipelines)} pipelines failed: {failed_pipelines}"
-            )
-            sys.exit(1)
+        # --- VISUALIZATION PASS ---
+        if Config.get_runtime_generate_images() and completed_strategy_names:
+            logger.info("🎨 Generating Comparison Images (Filtered for True Positives)...")
+            vis_utils.generate_comparison_images(completed_strategy_names)
 
-        logger.info("✅ All pipelines completed successfully.")
         overall_time = time.time() - overall_start
+        logger.info(f"PIPELINE EXECUTION SUMMARY - Total time: {overall_time:.2f}s")
 
-        # Log results summary
-        logger.info("PIPELINE EXECUTION SUMMARY")
-        logger.info(f"Total execution time: {overall_time:.2f} seconds")
-
-        logger.info(
-            f"Pipelines completed: {len(all_run_configs) - len(failed_pipelines)}/{len(all_run_configs)}"
-        )
-
-        for result in all_pipeline_results:
-            pipeline = result.get("pipeline", "unknown")
-            status = result.get("status", "completed")
-            exec_time = result.get("execution_time_sec", 0)
-
-            if status == "failed":
-                logger.error(
-                    f"  ❌ {pipeline}: FAILED - {result.get('error', 'Unknown error')}"
-                )
-            else:
-                logger.info(f"  ✅ {pipeline}: {exec_time:.2f}s")
-
-        # Finalize and upload consolidated results
-        logger.info("📊 Finalizing results...")
         tracker = csv_utils.get_results_tracker()
         local_path, gcs_path = tracker.finalize()
 
-        logger.info("✅ ALL PIPELINES COMPLETED SUCCESSFULLY")
-        logger.info(f"Results: {local_path}")
-        logger.info(f"GCS: {gcs_path}")
-
+        logger.info("✅ ALL PIPELINES COMPLETED")
         vis_utils.trigger_vm_shutdown_if_enabled()
 
-    except KeyboardInterrupt:
-        logger.warning("⚠️  Execution interrupted by user")
-        sys.exit(130)
     except Exception as e:
         logger.critical(f"❌ CRITICAL ERROR IN MAIN: {e}", exc_info=True)
         vis_utils.trigger_vm_shutdown_if_enabled(force=True)

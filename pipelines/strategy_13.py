@@ -16,12 +16,15 @@ import glob
 import time
 import datetime
 import logging
+import concurrent.futures
+from typing import Dict, Any, List, Set
+from collections import defaultdict
+
 import cv2
 import torch
 import torchvision
 import numpy as np
-from typing import Dict, Any, List
-from collections import defaultdict
+import pandas as pd
 
 try:
     from ultralytics import YOLO
@@ -63,11 +66,11 @@ def load_worker_models(det_model_name, cls_model_name):
 def process_video_worker(args):
     """
     Worker function to process a single video for Strategy 13.
-    Contains the full Motion-Gated Classifier Funnel logic.
     """
     video_path, config, gt_data = args
     vis_utils.setup_worker_logging(config.get("log_queue"))
-    logger = logging.getLogger(config["run_name"])
+    run_name = config.get("run_name")
+    logger = logging.getLogger(run_name)
 
     if YOLO is None:
         raise ImportError("ultralytics library missing")
@@ -88,6 +91,7 @@ def process_video_worker(args):
     vid_all_preds = []
     vid_all_gts = []
     vid_dotd_list = []
+    predictions_out = {}
 
     all_predictions = defaultdict(list)
     last_keyframe_preds: List[List[float]] = []
@@ -107,11 +111,8 @@ def process_video_worker(args):
         h_img, w_img, (config["img_size"], config["img_size"]), 0.2
     )
 
-    images_w_metadata = [{"img_start_time": 0, "image": image} for image in images]
-
-    # --- Pass 1: Generate Detections ---
-    for i, img_metadata in enumerate(images_w_metadata):
-        img_metadata["img_start_time"] = time.time()
+    # Pass 1: Generate Detections
+    for i, img_path in enumerate(images):
         if i % detect_every == 0:
 
             if i % Config.LOG_PROCESSING_IMAGES_SKIP_COUNT == 0:
@@ -120,7 +121,7 @@ def process_video_worker(args):
                     f"👉 Processing [{video_name}] Frame {i+1}/{n_frames} ({percent:.1f}%)"
                 )
 
-            frame = cv2.imread(img_metadata["image"])
+            frame = cv2.imread(img_path)
             if frame is None:
                 continue
 
@@ -178,11 +179,10 @@ def process_video_worker(args):
                                 active_tiles.append(cls_cand[j])
                                 active_offsets.append(cls_offs[j])
             else:
-                # First frame logic: process all tiles to establish a baseline
+                # First frame: process all tiles
                 for x1, y1, x2, y2 in tile_coords:
                     active_tiles.append(frame[y1:y2, x1:x2])
                     active_offsets.append((x1, y1))
-
 
             prev_gray = curr_gray
 
@@ -242,15 +242,16 @@ def process_video_worker(args):
             last_keyframe_preds = current_preds
             last_keyframe_idx = i
 
-    # --- Pass 2: Evaluation ---
+    # Pass 2: Evaluation
     image_results = []
-
-    # Pre-calculate video counts for metrics
     vid_tp, vid_fp, vid_fn = 0, 0, 0
 
-    for i, img_metadata in enumerate(images_w_metadata):
+    for i, img_path in enumerate(images):
+        frame_name = os.path.basename(img_path)
         final_preds = all_predictions[i]
-        key = f"{video_name}/{os.path.basename(img_metadata['image'])}"
+        predictions_out[f"{video_name}/{frame_name}"] = final_preds
+        
+        key = f"{video_name}/{frame_name}"
         gts = gt_data.get(key, [])
 
         # Store for mAP calc
@@ -265,13 +266,13 @@ def process_video_worker(args):
             for idx, g_box in enumerate(gts):
                 if idx in matched_gt:
                     continue
-                # p_box is [x, y, w, h, score] or [x, y, w, h]
                 dist = vis_utils.calculate_center_distance(p_box[:4], g_box)
                 iou = vis_utils.box_iou_xywh(p_box[:4], g_box)
                 if iou > best_iou:
                     best_iou = iou
                 if dist < best_dist:
-                    best_dist, best_idx = dist, idx
+                    best_dist = dist
+                    best_idx = idx
             if best_dist <= 30:
                 img_tp += 1
                 img_ious.append(best_iou)
@@ -285,23 +286,19 @@ def process_video_worker(args):
         vid_fp += img_fp
         vid_fn += img_fn
 
-        # Calculate IoU for matched pairs
         img_avg_iou = np.mean(img_ious) if img_ious else 0.0
-
-        # Calculate processing time and memory for this image
-        img_processing_time = time.time() - img_metadata["img_start_time"]
         img_mem = vis_utils.get_memory_usage()
 
         image_results.append(csv_utils.create_image_result(
             video_name=video_name,
-            frame_name=os.path.basename(img_metadata["image"]),
-            image_path=img_metadata["image"],
+            frame_name=frame_name,
+            image_path=img_path,
             predictions=final_preds,
             ground_truths=gts,
             tp=img_tp,
             fp=img_fp,
             fn=img_fn,
-            processing_time_sec=img_processing_time,
+            processing_time_sec=0, # Approx
             iou=img_avg_iou,
             memory_usage_mb=img_mem,
         ))
@@ -322,12 +319,12 @@ def process_video_worker(args):
         "tp": vid_tp, "fp": vid_fp, "fn": vid_fn,
         "mAP": vid_map, "dotd": vid_dotd, "vid_time": vid_time,
         "image_results": image_results,
+        "predictions": predictions_out,
     }
 
 
-@register_pipeline("strategy_13")
-def run_strategy_13_pipeline(config: Dict[str, Any]):
-    """Execute Strategy 13: Motion-Gated Classifier Funnel."""
+def _run_shared_logic(config: Dict[str, Any]):
+    """Execute Strategy 13 pipeline."""
     pipeline_name = config["run_name"]
     logger = logging.getLogger(f"{pipeline_name}")
     logger.info(f"--- STARTING STRATEGY 13 (PARALLEL): {pipeline_name} ---")
@@ -338,7 +335,6 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
     logger.info(f"⏳ Loading Detector: {config['model_name']}...")
     logger.info(f"⏳ Loading Classifier: {config['classifier_model_name']}...")
     try:
-        # Check models in main process
         _ = YOLO(config["model_name"])
         _ = YOLO(config["classifier_model_name"])
     except Exception as e:
@@ -369,17 +365,14 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
             ]
 
     results_tracker = csv_utils.get_results_tracker()
-    total_tp, total_fp, total_fn, total_time, total_frames = 0, 0, 0, 0, 0
+    total_tp, total_fp, total_fn, total_time = total_frames = 0
     total_map_sum = 0.0
     total_dotd_sum = 0.0
     total_videos_processed = 0
+    all_predictions = {}
 
     worker_args = [(vf, config, gt_data) for vf in video_folders]
 
-    import concurrent.futures
-
-    # Using ProcessPoolExecutor for parallel execution
-    # Adjust max_workers as needed, likely defined in Config
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=Config.MAX_WORKERS
     ) as executor:
@@ -433,6 +426,8 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
                 total_map_sum += result["mAP"]
                 total_dotd_sum += result["dotd"]
                 total_videos_processed += 1
+                
+                all_predictions.update(result.get("predictions", {}))
 
                 for img_res in result["image_results"]:
                     results_tracker.add_image_result(pipeline_name, img_res)
@@ -466,4 +461,19 @@ def run_strategy_13_pipeline(config: Dict[str, Any]):
     }
     vis_utils.log_pipeline_summary(logger, pipeline_name, summary_metrics)
     results_tracker.update_summary(pipeline_name, summary_metrics, config=config)
-    return {"pipeline": pipeline_name, "status": "completed", **summary_metrics}
+    return {
+        "pipeline": pipeline_name, 
+        "total_frames": total_frames, 
+        "avg_fps": avg_fps, 
+        "precision": overall_prec, 
+        "recall": overall_rec, 
+        "f1_score": overall_f1, 
+        "execution_time": time.time() - start_time,
+        "predictions": all_predictions,
+    }
+
+
+@register_pipeline("strategy_13")
+def run_strategy_13_pipeline(config: Dict[str, Any]):
+    """Execute Strategy 13."""
+    return _run_shared_logic(config)
