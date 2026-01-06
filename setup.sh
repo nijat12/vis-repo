@@ -78,6 +78,7 @@ if [ ! -f "runtime_config.json" ]; then
     cat <<EOL > runtime_config.json
 {
     "ENABLE_KILLSWITCH": false,
+    "GENERATE_IMAGES": false,
     "ENABLED_PIPELINES": [
         "baseline_base",
         "strategy_1",

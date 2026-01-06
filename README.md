@@ -65,43 +65,7 @@ Note: The script will automatically kill any previous instances of the model and
 
 ---
 
-
-## 🏆 Performance Benchmark (Jan 1st Run)
-
-The following table summarizes the performance on the test set using the new, simplified naming convention.
-
-| Strategy | Avg FPS | Precision | Recall | F1-Score | Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **baseline\_base\_001** | 0.69 | 3.41% | 0.10% | 0.19% | Reference Baseline. Very low recall. |
-| **strategy\_4\_001** | 0.44 | 2.39% | 54.50% | 4.58% | Brute-force SAHI baseline. |
-| **strategy\_5\_001** | 0.41 | 6.73% | 2.18% | 3.29% | Motion filtering improves precision. |
-| **strategy\_8\_001** | 1.48 | **10.20%** | 0.80% | 1.48% | Best Precision (non-SAHI). |
-| **strategy\_9\_001** | 1.82 | 4.65% | 38.66% | **8.29%** | **Highest F1-Score**. Good speed/accuracy balance. |
-| **strategy\_10\_001** | 0.16 | 2.38% | 54.18% | 4.56% | Native Tiling matches SAHI recall but is slower. |
-| **strategy\_11\_001** | 0.90 | 0.20% | 9.04% | 0.40% | Classifier stage seems to hurt precision here. |
-| **strategy\_12a\_001** | **3.54** | 7.85% | 0.87% | 1.56% | **Fastest**. Interpolation boosts FPS significantly. |
-| **strategy\_12b\_001**| 2.25 | 2.53% | 43.89% | 4.78% | Excellent trade-off: High FPS & High Recall. |
-| **strategy\_13a\_001** | 0.16 | 2.30% | 52.23% | 4.40% | Complex hybrid, similar to Strat 10. |
-
----
-
 # 📚 Detailed Strategy Pipelines
-
-### Pipeline Naming Convention
-To improve clarity, the original pipeline names have been refactored. Redundant SAHI variations have been removed.
-
-| Old Name | New Name | Description |
-| :--- | :--- | :--- |
-| `baseline_base` | `baseline_base` | The foundational YOLOv12n resize-and-detect pipeline. |
-| `baseline_w_tiling` | `strategy_1` | Baseline with native 4x3 grid tiling. |
-| `strategy_2` | `strategy_5` | The GMC + Dynamic Thresholding pipeline. |
-| `baseline_w_tiling_nms`| `strategy_3` | Strategy 1 with a global NMS pass. |
-| `baseline_base_sahi` | `strategy_4` | The SAHI-based tiling baseline. |
-| `strategy_8_sahi` | `strategy_9`| SAHI with temporal scheduling (`detect_every`). |
-| `strategy_12` | `strategy_12a` / `12b` | Temporal interpolation, split into GMC (`a`) and SAHI (`b`). |
-| `strategy_13a-d` | `strategy_13a` / `13b` | "Kitchen Sink" funnel. SAHI versions removed. |
-
-
 ## 1. Baseline (`baseline_base`)
 The baseline module establishes the fundamental performance metrics using standard YOLO inference techniques.
 

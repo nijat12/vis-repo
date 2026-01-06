@@ -51,6 +51,7 @@ echo "Creating default runtime_config.json..."
 cat <<EOL > runtime_config.json
 {
     "ENABLE_KILLSWITCH": false,
+    "GENERATE_IMAGES": false,
     "ENABLED_PIPELINES": [
         "baseline_base",
         "strategy_1",
